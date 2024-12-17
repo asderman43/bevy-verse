@@ -7,7 +7,7 @@ fn main() {
             DefaultPlugins,
             game::GamePlugin,
             PhysicsPlugins::default(),
-            PhysicsDebugPlugin::default(),
+            // PhysicsDebugPlugin::default(),
         ))
         .run();
 }

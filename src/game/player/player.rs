@@ -1,6 +1,6 @@
 use super::{
     camera_controller,
-    movement::{CharacterController, CharacterControllerBundle, CharacterControllerPlugin},
+    movement::{self, CharacterController, CharacterControllerBundle, CharacterControllerPlugin},
 };
 use avian3d::{math::Quaternion, prelude::*};
 use bevy::{
@@ -53,7 +53,7 @@ fn init_player(
     let player_entity = commands
         .spawn((
             Player {},
-            CharacterControllerBundle::new(Collider::capsule(1., 2.0), vec3(0., -9.81, 0.)),
+            CharacterControllerBundle::new(movement::CharacterShape::Capsule(1.0, 2.), vec3(0., -9.81, 0.)),
             Transform::from_xyz(0., 5., -80.),
             /*PbrBundle {
                 material: character_material,

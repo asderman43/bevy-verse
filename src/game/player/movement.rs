@@ -36,6 +36,8 @@ pub struct GravityController {
     force: Vec3,
 }
 
+
+
 #[derive(Component)]
 struct Grounded;
 
@@ -56,22 +58,37 @@ pub struct CharacterControllerBundle {
     gravity: GravityController,
 }
 
-impl CharacterControllerBundle {
-    pub fn new(collider: Collider, gravity: Vector) -> Self {
-        // Create shape caster as a slightly smaller version of collider
-        let mut caster_shape = collider.clone();
-        caster_shape.set_scale(Vector::ONE * 0.99, 10);
+pub enum CharacterShape {
+    /// Radius, Height
+    Capsule(f32, f32)
+}
+impl CharacterShape {
+    pub fn collider(&self) -> Collider {
+        match *self {
+            CharacterShape::Capsule(radius, height) => Collider::capsule(radius, height)
+        }
+    }
+    pub fn caster_shape(&self) -> Collider {
+        match *self {
+            CharacterShape::Capsule(radius, height) => Collider::capsule(radius - SKIN_WIDTH, height)
+        }
+    }
+}
 
+impl CharacterControllerBundle {
+    pub fn new(shape: CharacterShape, gravity: Vector) -> Self {
+        // Create shape caster as a slightly smaller version of collider
         Self {
             character_controller: CharacterController {
                 acceleration: 15.,
                 jump_impulse: 10.0,
                 max_slope: 60.0_f32.to_radians(),
                 is_grounded: false,
+                caster_shape: shape.caster_shape()
             },
             velocity: Velocity::default(),
             rigid_body: RigidBody::Kinematic,
-            collider,
+            collider: shape.collider(),
             gravity: GravityController { force: gravity },
         }
     }
@@ -82,6 +99,7 @@ pub struct CharacterController {
     pub jump_impulse: f32,
     pub max_slope: f32,
     pub is_grounded: bool,
+    pub caster_shape: Collider
 }
 
 fn keyboard_input(
@@ -175,22 +193,22 @@ fn movement(
     
     for (entity, mut transform, controller, mut velocity, collider) in player.iter_mut() {
         let query_filter = SpatialQueryFilter::default().with_excluded_entities([entity]);
-        dbg!(transform.translation);    
         let (new_pos, vel) = collide_and_slide(
             &spatial_query,
             &query_filter,
-            collider,
+            &controller.caster_shape,
             &transform,
             velocity.0 * delta_time
         ).get_last();
         transform.translation = new_pos;
-        velocity.0 = vel / delta_time;
+        //velocity.0 = vel / delta_time;
         //velocity.0 = Vec3::ZERO;
         // gizmos.primitive_3d(
         //     &Capsule3d::new(1.0, 2.0),
         //     Isometry3d::new(transform.translation, Quat::IDENTITY),
         //     Color::srgb(1.0, 0.0, 0.0),
         // );
+        velocity.0 = Vec3::ZERO;
     }
     
 }
@@ -201,6 +219,8 @@ pub struct Bounce {
     bounces: Vec<(Vec3, Vec3)>
 }
 const MAX_BOUNCES: u8 = 3;
+const EPSILON: f32 = 0.005;
+const SKIN_WIDTH: f32 = 0.5;
 impl Bounce {
     pub fn new() -> Bounce {
         return Bounce { bounces: Vec::with_capacity(MAX_BOUNCES as usize) }
@@ -226,7 +246,7 @@ fn collide_and_slide(
     
     let mut bounces = Bounce::new();
 
-    const EPSILON: f32 = 0.001;
+    
     // Remaining velocity and direction;
     let mut velocity = _velocity;
     // The position from which we are raycasting, initally the character's position;
@@ -297,8 +317,22 @@ pub fn test_debug(
                 transform.translation + velocity.0,
                 Color::srgb(0.0, 0.0, 1.0),
             );
+
+            let collider_stats = collider.shape().as_capsule().unwrap();
+            let caster_stats = controller.caster_shape.shape().as_capsule().unwrap();
+
+            gizmos.primitive_3d(
+                &Capsule3d::new(collider_stats.radius, collider_stats.height()),
+                Isometry3d::new(transform.translation, Quat::IDENTITY),
+                Color::srgb(1.0, 0.0, 1.0),
+            );
+            gizmos.primitive_3d(
+                &Capsule3d::new(caster_stats.radius, caster_stats.height()),
+                Isometry3d::new(transform.translation, Quat::IDENTITY),
+                Color::srgb(1.0, 1.0, 1.0),
+            );
+
             let mut color = 0.0;
-            dbg!(bounces.len());
             for (pos, vel) in bounces {
                 let (direction, length) = if let Ok(val) = Dir3::new_and_length(vel) {
                     val
@@ -311,7 +345,7 @@ pub fn test_debug(
                     Color::srgb(0.0, 0.0, 1.0),
                 );
                 gizmos.primitive_3d(
-                    &Capsule3d::new(1.0, 2.0),
+                    &Capsule3d::new(caster_stats.radius, caster_stats.height()),
                     Isometry3d::new(pos, Quat::IDENTITY),
                     Color::srgb(1.0 - color, 0.0, color),
                 );
