@@ -55,6 +55,8 @@ fn init_player(
             Player {},
             CharacterControllerBundle::new(movement::CharacterShape::Capsule(1.0, 2.), vec3(0., -9.81, 0.)),
             Transform::from_xyz(0., 5., -80.),
+            Mesh3d(meshes.add(Capsule3d::new(1., 2.0))),
+            MeshMaterial3d(character_material),
             /*PbrBundle {
                 material: character_material,
                 transform: Transform::from_xyz(0., 5., -80.),

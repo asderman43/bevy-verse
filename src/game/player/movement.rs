@@ -1,4 +1,6 @@
 
+use std::f32::NAN;
+
 use avian3d::{math::*, prelude::*};
 use bevy::{
     ecs::query::Has, math::{vec3, NormedVectorSpace, VectorSpace}, prelude::*, transform, utils::dbg
@@ -15,7 +17,7 @@ impl Plugin for CharacterControllerPlugin {
                 update_grounded,
                 apply_gravity,
                 wish_movement,
-                test_debug,
+                //test_debug,
                 movement,
                 
             )
@@ -132,6 +134,8 @@ fn update_grounded(
         // that isn't too steep.
         //let is_grounded = true;
 
+
+
         //controller.is_grounded = is_grounded;
         //println!("{}", is_grounded);
     }
@@ -172,7 +176,7 @@ fn apply_gravity(
 
     for (gravity, mut velocity, controller) in &mut controllers {
         if !controller.is_grounded {
-            velocity.0.y -= gravity.force.length() * delta_time;
+            velocity.0.y -= gravity.force.length();// * delta_time;
         }
     }
 }
@@ -192,6 +196,13 @@ fn movement(
     let delta_time = time.delta_secs_f64().adjust_precision();
     
     for (entity, mut transform, controller, mut velocity, collider) in player.iter_mut() {
+        //let collider_stats = collider.shape().as_capsule().unwrap();
+        //let caster_stats = controller.caster_shape.shape().as_capsule().unwrap();
+
+        
+        //let wasd = transform.translation - vec3(0., collider_stats.height(), 0.);
+        //gizmos.line(wasd, wasd + vec3(0., SKIN_WIDTH, 0.), Color::srgb(1.0, 1.0, 0.0));
+
         let query_filter = SpatialQueryFilter::default().with_excluded_entities([entity]);
         let (new_pos, vel) = collide_and_slide(
             &spatial_query,
@@ -200,7 +211,9 @@ fn movement(
             &transform,
             velocity.0 * delta_time
         ).get_last();
+        //dbg!(new_pos);
         transform.translation = new_pos;
+
         //velocity.0 = vel / delta_time;
         //velocity.0 = Vec3::ZERO;
         // gizmos.primitive_3d(
@@ -219,8 +232,8 @@ pub struct Bounce {
     bounces: Vec<(Vec3, Vec3)>
 }
 const MAX_BOUNCES: u8 = 3;
-const EPSILON: f32 = 0.005;
-const SKIN_WIDTH: f32 = 0.5;
+const EPSILON: f32 = 0.0005;
+const SKIN_WIDTH: f32 = 0.03;
 impl Bounce {
     pub fn new() -> Bounce {
         return Bounce { bounces: Vec::with_capacity(MAX_BOUNCES as usize) }
@@ -230,6 +243,9 @@ impl Bounce {
     }
     pub fn get(self) -> Vec<(Vec3, Vec3)> {
         self.bounces
+    }
+    pub fn read(&self) -> &Vec<(Vec3, Vec3)> {
+        &self.bounces
     }
     pub fn get_last(self) -> (Vec3, Vec3) {
         self.bounces.last().copied().unwrap_or((Vec3::ZERO, Vec3::ZERO))
@@ -261,8 +277,7 @@ fn collide_and_slide(
             bounces.add(position, velocity);
             break;
         };
-
-        let max_distance = length;
+        let max_distance = length + SKIN_WIDTH;
         
         //println!("{:?} {}", position, velocity);
         if let Some(hit_data) = spatial_query.cast_shape(
@@ -274,21 +289,24 @@ fn collide_and_slide(
             filter
         ) {
             // The remaining velocity, past the rayhit;
-            let remaining = length - hit_data.distance;
-            let safe_movement = direction * (hit_data.distance - EPSILON).max(0.0) + hit_data.normal1 * EPSILON;
-             transform.up();
+            //dbg!(hit_data.distance, position);
+            
+            let safe_movement = direction * (hit_data.distance - SKIN_WIDTH).max(0.); //+ hit_data.normal1 * EPSILON;
             position += safe_movement;
-            velocity -= safe_movement;
+            
+            //velocity -= safe_movement;
 
-            let project_on_plane = velocity.reject_from_normalized(hit_data.normal1).normalize();
-            velocity = project_on_plane * remaining * f32::sqrt(direction.dot(hit_data.normal1) + 1.);
+            let project_on_plane = velocity.reject_from_normalized(hit_data.normal1);
+            velocity = project_on_plane; //* remaining * f32::sqrt(direction.dot(hit_data.normal1) + 1.);
+            
             bounces.add(position, velocity);
         } else {
             bounces.add(position + velocity, Vec3::ZERO);
-            return bounces;
+            break;
         }
         
     }
+    //dbg!(bounces.read());
     //println!("{}", rem_vel);
     return bounces;
 }
@@ -305,6 +323,9 @@ pub fn test_debug(
         for (entity, transform, controller, velocity, collider) in player.iter() {
             let query_filter = SpatialQueryFilter::default().with_excluded_entities([entity]);
             
+            let collider_stats = collider.shape().as_capsule().unwrap();
+            let caster_stats = controller.caster_shape.shape().as_capsule().unwrap();
+
             let bounces = collide_and_slide(
                 &spatial_query,
                 &query_filter,
@@ -318,8 +339,7 @@ pub fn test_debug(
                 Color::srgb(0.0, 0.0, 1.0),
             );
 
-            let collider_stats = collider.shape().as_capsule().unwrap();
-            let caster_stats = controller.caster_shape.shape().as_capsule().unwrap();
+            
 
             gizmos.primitive_3d(
                 &Capsule3d::new(collider_stats.radius, collider_stats.height()),
@@ -331,7 +351,7 @@ pub fn test_debug(
                 Isometry3d::new(transform.translation, Quat::IDENTITY),
                 Color::srgb(1.0, 1.0, 1.0),
             );
-
+            
             let mut color = 0.0;
             for (pos, vel) in bounces {
                 let (direction, length) = if let Ok(val) = Dir3::new_and_length(vel) {
