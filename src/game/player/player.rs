@@ -1,12 +1,11 @@
-use super::{
-    camera_controller,
-    movement::{self, CharacterController, CharacterControllerBundle, CharacterControllerPlugin},
-};
+use super::camera_controller;
+//use ::{CharacterController, CharacterControllerBundle, CharacterControllerPlugin};
 use avian3d::{math::Quaternion, prelude::*};
 use bevy::{
     math::{vec3, VectorSpace},
     prelude::*,
 };
+use bevy_verse::movement::*;
 pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
@@ -53,17 +52,10 @@ fn init_player(
     let player_entity = commands
         .spawn((
             Player {},
-            CharacterControllerBundle::new(movement::CharacterShape::Capsule(1.0, 2.), vec3(0., -9.81, 0.)),
+            CharacterControllerBundle::new(CharacterShape::Capsule(1.0, 2.), vec3(0., -9.81, 0.)),
             Transform::from_xyz(0., 5., -80.),
             Mesh3d(meshes.add(Capsule3d::new(1., 2.0))),
             MeshMaterial3d(character_material),
-            /*PbrBundle {
-                material: character_material,
-                transform: Transform::from_xyz(0., 5., -80.),
-                mesh: meshes.add(Capsule3d::new(1., 2.0)),
-                ..Default::default()
-            },*/
-            //DebugRender::default().with_collider_color(Color::srgb(1.0, 0.0, 0.0)),
         ))
         .id();
     commands.entity(player_entity);

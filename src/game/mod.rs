@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 pub mod level;
 pub mod player;
+pub mod target;
 pub mod window;
-
 pub struct GamePlugin;
 
 impl Plugin for GamePlugin {

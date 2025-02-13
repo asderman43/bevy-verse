@@ -5,7 +5,9 @@ edition = "2021"
 
 [dependencies]
 avian3d = { git = "https://github.com/Jondolf/avian", branch = "main" }
-bevy = { version = "0.15.0", features = ["dynamic_linking", "bevy_dev_tools"] }
+bevy = { version = "0.15.0", features = ["dynamic_linking", "bevy_dev_tools", "bevy_remote"] }
+bevy_panorbit_camera = "0.22.1"
+bevy_polyline = "0.11.0"
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]
 opt-level = 1
