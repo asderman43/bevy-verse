@@ -1,62 +1,24 @@
+use std::f32::consts::PI;
+
 use avian3d::prelude::*;
 use bevy::{
+    color::palettes::css::ORANGE_RED,
     dev_tools::fps_overlay::{FpsOverlayConfig, FpsOverlayPlugin},
+    pbr::CascadeShadowConfigBuilder,
     prelude::*,
+    remote::{http::RemoteHttpPlugin, RemotePlugin},
     text::FontSmoothing,
 };
 use bevy_panorbit_camera::{self, PanOrbitCamera, PanOrbitCameraPlugin};
 use bevy_polyline::PolylinePlugin;
-use bevy_verse::terrain::{
-    self, debug::{draw_box, draw_points, keyboard_input}, update_mesh, Terrain 
+use bevy_verse::voxel_terrain::{
+    debug::{point_cloud::PointCloudPlugin},
+    noise::noise_preview,
+    terrain::{update_mesh, Terrain},
 };
-use bevy_verse::terrain::voxel::Voxel;
+use libnoise::Generator;
+
 mod game;
-pub fn setup(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-) {
-    // Import the custom texture.
-    // Create and save a handle to the mesh.
-    let size = 2;
-    let real_size = size + 1;
-    let mut v = Voxel::new(size);
-    v.set((2, 0, 0), real_size, 1);
-    v.set((1, 0, 0), real_size, 1);
-    v.set((0, 0, 0), real_size, 1);
-    v.set((1, 1, 0), real_size, 1);
-
-    let cube_mesh_handle: Handle<Mesh> = meshes.add(v.create_mesh(size, real_size));
-
-    // Render the mesh with the custom texture, and add the marker.
-    commands.spawn((
-        Mesh3d(cube_mesh_handle),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            cull_mode: None,
-            ..default()
-        })),
-    ));
-
-    // Transform for the camera and lighting, looking at (0,0,0) (the position of the mesh).
-    let camera_and_light_transform =
-        Transform::from_xyz(1.8, 1.8, 1.8).looking_at(Vec3::ZERO, Vec3::Y);
-
-    // Camera in 3D space.
-    commands.spawn((
-        Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-        PanOrbitCamera::default(),
-    ));
-
-    // Light up the scene.
-    commands.spawn((PointLight::default(), camera_and_light_transform));
-
-    // Text to describe the controls.
-}
-
-
-
-
 
 fn setup_2(
     mut commands: Commands,
@@ -65,24 +27,21 @@ fn setup_2(
     mut meshes: ResMut<Assets<Mesh>>,
     mut terrain: ResMut<Terrain>,
 ) {
-    let _ = terrain.set(IVec3::new(0, 1, 0), 1);
-    let _ = terrain.set(IVec3::new(1, 2, 0), 1);
-    let _ = terrain.set(IVec3::new(1, 1, 1), 1);
+    terrain.generate_chunk(IVec3::ZERO);
+    terrain.generate_chunk(IVec3::X);
+    terrain.generate_chunk(IVec3::Z);
+    terrain.generate_chunk(IVec3::NEG_X);
+    terrain.generate_chunk(IVec3::NEG_Z);
+    terrain.create_mesh(&mut meshes, &mut commands, &mut materials);
 
-    terrain.create_mesh(&mut meshes);
-    let handle = terrain.mesh_handle.clone().unwrap();
-    commands.spawn((
-        Mesh3d(handle),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            cull_mode: None,
-            ..default()
-        })),
-    ));
+    // let handle = terrain.mesh_handle.clone().unwrap();
+    // commands.spawn((
+    //     Mesh3d(handle),
+    //     MeshMaterial3d(materials.add(StandardMaterial {
 
-
-    
-
-
+    //         ..default()
+    //     })),
+    // ));
 
     let camera_and_light_transform =
         Transform::from_xyz(1.8, 1.8, 1.8).looking_at(Vec3::ZERO, Vec3::Y);
@@ -94,15 +53,42 @@ fn setup_2(
     ));
 
     // Light up the scene.
-    commands.spawn((PointLight::default(), camera_and_light_transform));
+    commands.insert_resource(AmbientLight {
+        color: ORANGE_RED.into(),
+        brightness: 100.,
+    });
+
+    commands.spawn((
+        DirectionalLight {
+            illuminance: light_consts::lux::OVERCAST_DAY,
+            shadows_enabled: true,
+            ..default()
+        },
+        Transform {
+            translation: Vec3::new(0.0, 2.0, 0.0),
+            rotation: Quat::from_rotation_x(-PI / 4.),
+            ..default()
+        },
+        // The default cascade config is designed to handle large scenes.
+        // As this example has a much smaller world, we can tighten the shadow
+        // bounds for better visual quality.
+        CascadeShadowConfigBuilder {
+            first_cascade_far_bound: 4.0,
+            maximum_distance: 10.0,
+            ..default()
+        }
+        .build(),
+    ));
 }
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, PanOrbitCameraPlugin, PolylinePlugin))
-        .insert_resource(Terrain::new(2))
-        .add_systems(Startup, (draw_box, setup_2))
-        .add_systems(Update, (draw_points, keyboard_input))
+        .add_plugins((DefaultPlugins, PanOrbitCameraPlugin, PolylinePlugin, PointCloudPlugin))
+        .add_plugins(RemotePlugin::default())
+        .add_plugins(RemoteHttpPlugin::default())
+        .insert_resource(Terrain::new(16, 2))
+        .add_systems(Startup, (setup_2, noise_preview))
+            
         .add_systems(PostUpdate, update_mesh)
         .run();
 }

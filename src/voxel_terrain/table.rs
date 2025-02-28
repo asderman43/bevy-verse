@@ -1,7 +1,5 @@
 use bevy::math::{prelude::Vec3, vec3};
 
-
-
 //
 //            2             3
 //            +-------------+               +-----6-------+
@@ -76,6 +74,8 @@ pub const EDGE_VERTEX_INDICES: [(usize, usize); 12] = [
     (3, 7),
     (2, 6),
 ];
+
+pub const REMAP: [usize; 8] = [0, 1, 3, 2, 4, 5, 7, 6];
 
 // For each MC case, a mask of edge indices that need to be split
 pub const EDGE_MASKS: [usize; 256] = [
