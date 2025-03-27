@@ -28,7 +28,8 @@ impl GridBuffer {
         terrain: &Terrain
     ) -> Self {
         let size = terrain.get_size();
-        let real_size = size + 1;
+        // TODO: ezt most kikapcsoltam!
+        let real_size = size;
 
         // Haromszor atgondoltam es ez kell mert ha parallelizalok akkor majd jol jon a
         // cacheleshez, vagy hat a row by row.
@@ -67,27 +68,27 @@ impl IsosurfaceExtractor {
         for (x, y, z) in XYZ::new(grid.size-1) {
             // TODO: Ezt megnezni miert nem mukodott alapbol.
             let mut value: usize = 0;
-            // let corners = [
-            //     grid.get((x, y, z)),
-            //     grid.get((x + 1, y, z)),
-            //     grid.get((x + 1, y + 1, z)),
-            //     grid.get((x, y + 1, z)),
-            //     grid.get((x, y, z + 1)),
-            //     grid.get((x + 1, y, z + 1)),
-            //     grid.get((x + 1, y + 1, z + 1)),
-            //     grid.get((x, y + 1, z + 1)),
-            // ];
-
             let corners = [
                 grid.get((x, y, z)),
                 grid.get((x + 1, y, z)),
-                grid.get((x, y + 1, z)),
                 grid.get((x + 1, y + 1, z)),
+                grid.get((x, y + 1, z)),
                 grid.get((x, y, z + 1)),
                 grid.get((x + 1, y, z + 1)),
-                grid.get((x, y + 1, z + 1)),
                 grid.get((x + 1, y + 1, z + 1)),
+                grid.get((x, y + 1, z + 1)),
             ];
+
+            // let corners = [
+            //     grid.get((x, y, z)),
+            //     grid.get((x + 1, y, z)),
+            //     grid.get((x, y + 1, z)),
+            //     grid.get((x + 1, y + 1, z)),
+            //     grid.get((x, y, z + 1)),
+            //     grid.get((x + 1, y, z + 1)),
+            //     grid.get((x, y + 1, z + 1)),
+            //     grid.get((x + 1, y + 1, z + 1)),
+            // ];
 
             for i in 0..8 {
                 if corners[i] <= self.isolevel {

@@ -5,17 +5,19 @@ use bevy::{
 };
 use bevy_polyline::prelude::*;
 
-use super::{terrain::Terrain, util::*};
+use crate::voxel_terrain::{terrain::Terrain, util::{position_from_index, XYZ}};
+
+
 
 // TODO! ennek nem kell ennyire komplikaltnak lennie.
 pub fn create_box(size: usize) -> Vec<(Vec3, Vec3)> {
-    let line_count = 4 * (size + 1).pow(3);
+    let line_count = 4 * (size).pow(3);
     let mut lines = Vec::with_capacity(line_count);
     //let mut out_points = Vec::with_capacity(size.pow(3) * 8);
     dbg!(size);
     dbg!(lines.capacity());
-    for (x, y, z) in XYZ::new(size + 1) {
-        let (x, y, z, size) = (x as f32, y as f32, z as f32, size as f32);
+    for (x, y, z) in XYZ::new(size) {
+        let (x, y, z, size) = (x as f32, y as f32, z as f32, (size - 1)as f32);
         let point = (vec3(0., y, z), vec3(size, y, z));
         lines.push(point);
         let point = (vec3(x, y, 0.), vec3(x, y, size));
@@ -121,9 +123,9 @@ pub fn keyboard_input(mut terrain: ResMut<Terrain>, keyboard_input: Res<ButtonIn
         let position: IVec3 = IVec3::new(x as i32, y as i32, z as i32);
 
         if let Some(voxel) = terrain.get(position) {
+            
             let value = match voxel {
-                0 => 1,
-                1 => 0,
+                0 => terrain.isolevel + 1,
                 _ => 0,
             };
 

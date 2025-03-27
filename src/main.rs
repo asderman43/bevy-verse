@@ -12,7 +12,7 @@ use bevy::{
 use bevy_panorbit_camera::{self, PanOrbitCamera, PanOrbitCameraPlugin};
 use bevy_polyline::PolylinePlugin;
 use bevy_verse::voxel_terrain::{
-    debug::point_cloud::PointCloudPlugin,
+    debug::{grid::{draw_box, keyboard_input}, point_cloud::PointCloudPlugin},
     noise::noise_preview,
     terrain::{update_mesh, Terrain},
 };
@@ -28,10 +28,10 @@ fn setup_2(
     mut terrain: ResMut<Terrain>,
 ) {
     terrain.generate_chunk(IVec3::ZERO);
-    terrain.generate_chunk(IVec3::X);
-    terrain.generate_chunk(IVec3::Z);
-    terrain.generate_chunk(IVec3::NEG_X);
-    terrain.generate_chunk(IVec3::NEG_Z);
+    // terrain.generate_chunk(IVec3::X);
+    // terrain.generate_chunk(IVec3::Z);
+    // terrain.generate_chunk(IVec3::NEG_X);
+    // terrain.generate_chunk(IVec3::NEG_Z);
     terrain.create_mesh(&mut meshes, &mut commands, &mut materials);
     
     // let handle = terrain.mesh_handle.clone().unwrap();
@@ -92,8 +92,8 @@ fn main() {
         .add_plugins(RemotePlugin::default())
         .add_plugins(RemoteHttpPlugin::default())
         .insert_resource(Terrain::new(2, 2))
-        .add_systems(Startup, (setup_2, noise_preview))
-        .add_systems(PostUpdate, update_mesh)
+        .add_systems(Startup, (setup_2, draw_box))
+        .add_systems(PostUpdate, (update_mesh, keyboard_input))
         .run();
 }
 // fn main() {

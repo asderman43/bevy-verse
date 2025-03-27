@@ -18,16 +18,8 @@ use super::{
     voxel::{self, *},
 };
 
-pub fn update_mesh(mut terrain: ResMut<Terrain>, mut meshes: ResMut<Assets<Mesh>>) {
-    // if terrain.changed {
-    //     let mesh = meshes.get_mut(terrain.mesh_handle.as_ref().unwrap().id());
-
-    //     if let Some(_mesh) = mesh {
-    //         *_mesh = terrain.mesh();
-    //         terrain.changed = false;
-    //     } else {
-    //     }
-    // }
+pub fn update_mesh(mut terrain: ResMut<Terrain>, mut meshes: ResMut<Assets<Mesh>>, mut commands: Commands, mut materials: ResMut<Assets<StandardMaterial>>) {
+    terrain.create_mesh(&mut meshes, &mut commands, &mut materials);
 }
 
 #[derive(Resource)]
@@ -37,7 +29,7 @@ pub struct Terrain {
     remesh: HashSet<IVec3>,
     size: usize,
     // TODO: ez legyen egy enum hogy kell-e vagy sem interpolation.
-    isolevel: i8,
+    pub isolevel: i8,
     
     //generator: TerrainGenerator
 }
@@ -163,7 +155,7 @@ impl Terrain {
                     };
                     commands.spawn((
                         Mesh3d(handle.clone()),
-                        MeshMaterial3d(materials.add(StandardMaterial { ..default() })),
+                        MeshMaterial3d(materials.add(StandardMaterial { cull_mode: None, ..default() })),
                         Transform::from_translation(positon),
                     ));
 
