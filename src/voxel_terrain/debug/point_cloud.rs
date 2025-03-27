@@ -1,15 +1,18 @@
-use bevy::{prelude::*, render::{render_resource::{AsBindGroup, ShaderRef}, storage::ShaderStorageBuffer}};
-
+use bevy::{
+    prelude::*,
+    render::{
+        render_resource::{AsBindGroup, ShaderRef},
+        storage::ShaderStorageBuffer,
+    },
+};
 
 pub struct PointCloudPlugin;
-
 
 impl Plugin for PointCloudPlugin {
     fn build(&self, app: &mut App) {
         return;
-        app
-        .add_plugins(MaterialPlugin::<CustomMaterial>::default())
-        .add_systems(Startup, setup);
+        app.add_plugins(MaterialPlugin::<CustomMaterial>::default())
+            .add_systems(Startup, setup);
     }
 }
 

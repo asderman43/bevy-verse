@@ -101,6 +101,8 @@ pub const EDGE_MASKS: [usize; 256] = [
     0xb06, 0xa0f, 0x905, 0x80c, 0x30a, 0x203, 0x109, 0x0,
 ];
 
+            
+
 // For each MC case, a list of triangles, specified as triples of edge indices, terminated by -1
 pub const TRIANGLE_TABLE: [[i8; 16]; 256] = [
     [
