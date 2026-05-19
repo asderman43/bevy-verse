@@ -27,8 +27,7 @@ impl VoxelMap {
         self.chunk[position.0 + position.1 * size + position.2 * size * size]
     }
     pub fn set(&mut self, position: (usize, usize, usize), size: usize, value: i8) {
-        self.chunk[position.0 + position.1 * size + position.2 * size * size] =
-            value;
+        self.chunk[position.0 + position.1 * size + position.2 * size * size] = value;
     }
     /// THIS IS A DEBUG FUNCTION
     pub fn set_chunk(&mut self, vec: Vec<i8>) {

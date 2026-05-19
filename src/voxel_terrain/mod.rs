@@ -1,12 +1,26 @@
+use bevy::prelude::*;
+
+use crate::voxel_terrain::{debug::VoxelTerrainDebugPlugin, terrain::Terrain};
+
+// pub mod march;
+// pub mod table;
+// pub mod terrain;
+// pub mod util;
+// pub mod voxel;
 pub mod debug;
-pub mod march;
-pub mod table;
 pub mod terrain;
-pub mod util;
-pub mod voxel;
+pub mod voxels;
 
-pub mod noise;
+pub struct VoxelTerrainPlugin;
 
+impl Plugin for VoxelTerrainPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(VoxelTerrainDebugPlugin)
+            .insert_resource(Terrain::new(8));
+    }
+}
+
+/*
 use bevy_panorbit_camera::PanOrbitCamera;
 use table::*;
 use voxel::*;
@@ -17,7 +31,7 @@ use bevy::{
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology},
     state::commands,
-    utils::hashbrown::HashMap,
+
 };
 
 #[cfg(test)]
@@ -43,21 +57,20 @@ mod tests {
             chunk_0.set_chunk(vec![0, 1, 0, 1, 0, 1, 0, 1]);
         }
         let chunk_0 = terrain.chunks.get(&IVec3::ZERO).unwrap();
-        
+
         let global_pos = terrain.local_to_global((3, 3, 3), IVec3::ZERO);
         let local_pos = terrain.global_to_local(global_pos);
         println!("{}", terrain.get_size());
         // println!("{}", global_pos);
         // println!("{} {:?}", local_pos.0, local_pos.1);
         let buffer = GridBuffer::new(chunk_0, &terrain);
-        
-        
-        assert!(buffer.grid == vec![
-            0,1,0, 0,1,0, 0,0,0,
-            0,1,0, 0,1,0, 0,0,0,
-            0,0,0, 0,0,0, 0,0,0
-            
-        ])
-    }
 
+        assert!(
+            buffer.grid
+                == vec![
+                    0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+                ]
+        )
+    }
 }
+*/
