@@ -1,21 +1,20 @@
 use std::{fmt, ptr};
 
-use crate::voxel_terrain::{table::{EDGE_INTERSECTION, TRIANGLE_COUNT}, util::position_from_index};
+use crate::voxel_terrain::table::{EDGE_INTERSECTION, TRIANGLE_COUNT};
 
 use super::{
-    table::{EDGE_VERTEX_INDICES, ORDER, REMAP, TRIANGLE_TABLE, VERTEX_POSITIONS}, terrain::Terrain, util::XYZ, voxel::VoxelMap
+    table::{EDGE_VERTEX_INDICES, ORDER, TRIANGLE_TABLE, VERTEX_POSITIONS}, util::XYZ,
 };
 use bevy::{
     asset::RenderAssetUsages, color::palettes::css::{BLUE, GREEN, RED}, math::vec3, prelude::*, render::mesh::{Indices, PrimitiveTopology}
 };
-use bevy_panorbit_camera::PanOrbitCamera;
 
 fn test_test_test() -> (Vec<i8>, i8, usize) {
     test_map_4()
 }
 
 pub fn setup(mut commands: Commands,
-    asset_server: Res<AssetServer>,
+    _asset_server: Res<AssetServer>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut meshes: ResMut<Assets<Mesh>>,) {
         let (map, isolevel, size) = test_test_test();
@@ -51,12 +50,32 @@ pub fn setup(mut commands: Commands,
             })),
             
         ));
-
-        commands.spawn((
-            Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
-            PanOrbitCamera::default(),
-        ));
     }
+
+/// Builds the 12 wireframe edges of an axis-aligned box spanning
+/// from the origin to (size-1) on each axis.
+fn create_box(size: usize) -> Vec<(Vec3, Vec3)> {
+    let n = (size.saturating_sub(1)) as f32;
+    let corners = [
+        vec3(0.0, 0.0, 0.0),
+        vec3(n, 0.0, 0.0),
+        vec3(n, n, 0.0),
+        vec3(0.0, n, 0.0),
+        vec3(0.0, 0.0, n),
+        vec3(n, 0.0, n),
+        vec3(n, n, n),
+        vec3(0.0, n, n),
+    ];
+    let edges = [
+        (0, 1), (1, 2), (2, 3), (3, 0), // bottom face
+        (4, 5), (5, 6), (6, 7), (7, 4), // top face
+        (0, 4), (1, 5), (2, 6), (3, 7), // vertical edges
+    ];
+    edges
+        .iter()
+        .map(|&(a, b)| (corners[a], corners[b]))
+        .collect()
+}
 
 pub fn march_debug(mut gizmo_assets: ResMut<Assets<GizmoAsset>>, mut commands: Commands) {
     let (map, isolevel, size) = test_test_test();
@@ -123,35 +142,6 @@ impl fmt::Display for GridBuffer {
     }
 }
 impl GridBuffer {
-    pub fn new(chunk: &VoxelMap, terrain: &Terrain) -> Self {
-        let size = terrain.get_size();
-
-        let real_size = size;
-
-        // Haromszor atgondoltam es ez kell mert ha parallelizalok akkor majd jol jon a
-        // cacheleshez, vagy hat a row by row.
-        // Ha kornyezo chunk nincs akkor ott az ilyen border szeruseg 0akkal lesz megtoltve.
-
-        let mut vec = Vec::with_capacity(real_size.pow(3));
-        for position in XYZ::new(real_size) {
-            let (x, y, z) = position;
-            // ki kell vonogatni valahogy
-            // let glubal = terrain.local_to_global((x,y,z), chunk.id);
-            // println!("{:?}", terrain.global_to_local(glubal));
-            let val = if let Some(val) = terrain.get(terrain.local_to_global((x, y, z), chunk.id)) {
-                val
-            } else {
-                0
-            };
-
-            vec.push(val);
-        }
-
-        GridBuffer {
-            grid: vec,
-            size: (real_size),
-        }
-    }
     fn get(&self, position: (usize, usize, usize)) -> i8 {
         self.grid[position.0 + position.1 * self.size + position.2 * self.size * self.size]
     }
@@ -179,12 +169,6 @@ pub struct EdgeID {
     left_trim: usize,
     right_trim: usize,
 }
-// #[derive(Default, Clone, Debug)]
-// pub struct XEdgeData {
-//     left_trim: usize,
-//     right_trim: usize,
-//     x_intersects: u32,
-// }
 impl IsosurfaceExtractor {
     pub fn new(isolevel: i8) -> Self {
         IsosurfaceExtractor { isolevel }
@@ -208,17 +192,6 @@ impl IsosurfaceExtractor {
             // TODO: Ezt megnezni miert nem mukodott alapbol.
             let mut value: usize = 0;
 
-            // let corners = [
-            //     grid.get((x, y, z)),
-            //     grid.get((x + 1, y, z)),
-            //     grid.get((x + 1, y + 1, z)),
-            //     grid.get((x, y + 1, z)),
-            //     grid.get((x, y, z + 1)),
-            //     grid.get((x + 1, y, z + 1)),
-            //     grid.get((x + 1, y + 1, z + 1)),
-            //     grid.get((x, y + 1, z + 1)),
-            // ];
-
             let corners = [
                 grid.get((x, y, z)),
                 grid.get((x + 1, y, z)),
@@ -235,8 +208,6 @@ impl IsosurfaceExtractor {
                     value |= 1 << i;
                 }
             }
-
-            // println!("{:?}", TRIANGLE_TABLE[value as usize]);
 
             let triangle = TRIANGLE_TABLE[value];
 
@@ -257,7 +228,6 @@ impl IsosurfaceExtractor {
                         self.isolevel,
                     );
 
-                //    + (VERTEX_POSITIONS[vertices.0] + VERTEX_POSITIONS[vertices.1]) / 2.0;
                 vertex_buffer.push(vert);
 
                 index += 1;
@@ -282,8 +252,8 @@ impl IsosurfaceExtractor {
     fn pass_1(&self, grid_buffer: &GridBuffer) -> (Vec<u8>, Vec<Metadata>) {
         let size = grid_buffer.size;
         let buffer_length = size - 1;
-        let mut edge_buffer = Vec::with_capacity(buffer_length * size.pow(2)); // vec![255;buffer_length * size.pow(2)];//Vec::with_capacity(size - 1);
-        let mut edge_data = Vec::with_capacity(size.pow(2)); //vec![XEdgeData::default(); size.pow(2)];
+        let mut edge_buffer = Vec::with_capacity(buffer_length * size.pow(2));
+        let mut edge_data = Vec::with_capacity(size.pow(2));
 
         unsafe {
             edge_buffer.set_len(buffer_length * size.pow(2));
@@ -324,13 +294,10 @@ impl IsosurfaceExtractor {
                             xl = increment;
                         }
                         if edge_case != 3 {
-                            //println!("{}", edge_case);
                             x_intersects += 1;
                         }
                         xr = increment;
                     }
-
-                    let position = buffer_index + increment;
 
                     edge_buffer[buffer_index + increment] = edge_case;
                     edge_data[y + z * size] = Metadata {
@@ -355,15 +322,8 @@ impl IsosurfaceExtractor {
         let buffer_length = size - 1;
         let x_max = buffer_length - 1;
 
-        
-
-        //let mut edge_metadata: Vec<Metadata> = Vec::with_capacity(size * size);
-        // TODO: it lesz a baj
         for y in 0..=max_index {
             for z in 0..=max_index {
-                // println!("{:?}", &edge_data[y + z * size]);
-
-                
                 let edge_data = unsafe {
                     [
                         ptr::addr_of_mut!(edge_data[y + z * size]).as_mut().unwrap(),
@@ -374,9 +334,7 @@ impl IsosurfaceExtractor {
                 };
 
                 // Adjusted trim values.
-                let (left_trim, right_trim, x_intersects) = {
-                    
-                    // println!("{:?} \n", edge_data);
+                let (left_trim, right_trim, _x_intersects) = {
                     let (left_trim, right_trim) = {
                         let mut left_trim = edge_data[0].left_trim;
                         let mut right_trim = edge_data[0].right_trim;
@@ -393,27 +351,6 @@ impl IsosurfaceExtractor {
                     let x_intersects = edge_data[0].x_intersects;
                     (left_trim, right_trim, x_intersects)
                 };
-                // [&edge_data[y + z*size],
-                // &edge_data[(y) + (z+1)*size],
-                // &edge_data[(y+1) + (z)*size],
-                // &edge_data[(y+1) + (z+1)*size]];
-                // println!("{:?} \n", edge_data);
-                // let (left_trim, right_trim) = {
-                //     let mut left_trim = edge_data[0].left_trim;
-                //     let mut right_trim = edge_data[0].right_trim;
-                //     for data in edge_data {
-                //         if data.left_trim < left_trim {
-                //             left_trim = data.left_trim;
-                //         }
-                //         if data.right_trim > right_trim {
-                //             right_trim = data.right_trim;
-                //         }
-
-                //     }
-                //     (left_trim, right_trim)
-                // };
-                // println!("Lx {} Rx {}", left_trim, right_trim);
-                // let x_intersects = edge_data[0].x_intersects;
                 let mut y_intersects: u32 = 0;
                 let mut z_intersects = 0;
                 let mut tris_count: u32 = 0;
@@ -432,15 +369,11 @@ impl IsosurfaceExtractor {
                     for i in 0..4 {
                         value |= edges[i] << (i * 2);
                     }
-                    // println!("{value}");
 
                     let edge_intersections = EDGE_INTERSECTION[value as usize];
 
-                    
                     tris_count += TRIANGLE_COUNT[value as usize] as u32;
-                    
 
-                    
                     y_intersects += ((edge_intersections >> 4) & 1) as u32;
                     z_intersects += ((edge_intersections >> 8) & 1) as u32;
                     
@@ -463,7 +396,6 @@ impl IsosurfaceExtractor {
                     if x == x_max && z == max_index {
                         edge_data[1].y_intersects += ((edge_intersections >> 7) & 1) as u32;
                     }
-                    //println!("{:#b} {} {}", EDGE_INTERSECTION[value as usize], y, z);
                 }
                 // Last X
                 edge_data[0].tris_count = tris_count;
@@ -479,7 +411,6 @@ impl IsosurfaceExtractor {
                 if z == max_index && y == max_index {
                     edge_data[3].yz = (y+z, z+1); 
                 }
-                // println!("\nY: {y:?} Z: {z} x_int: {x_intersects:?} y_int: {y_intersects:?} z_int: {z_intersects:?} tris_count: {tris_count:?}\n");
             }
         }
         edge_data
@@ -493,7 +424,6 @@ impl IsosurfaceExtractor {
             let indices_id = triangle_count * 3;
             triangle_count += metadata.tris_count;
             let edge = EdgeID {
-                
                 x: overall,
                 y: overall + metadata.x_intersects,
                 z: overall + metadata.x_intersects + metadata.y_intersects,
@@ -504,9 +434,6 @@ impl IsosurfaceExtractor {
             };
             overall = overall + metadata.x_intersects + metadata.y_intersects + metadata.z_intersects;
             edge_ids.push(edge);
-            // x_id += metadata.x_intersects;
-            // y_id += metadata.y_intersects;
-            // z_id += metadata.z_intersects;
         }
         let indices_len = (triangle_count * 3) as usize;
         let mut indices: Vec<u32> = Vec::with_capacity(indices_len);
@@ -550,22 +477,20 @@ impl IsosurfaceExtractor {
                     }
                     (left_trim, right_trim)
                 };
-                // TODO: Itt a hiba mivel az elso teljesen elbassza az indexelest, pl az 1 atirja a 0 poziciot.
                 let mut ids = [
                     /*  0 */ edge_data[0].x,
                     /*  1 */ edge_data[1].x,
                     /*  2 */ edge_data[2].x,
                     /*  3 */ edge_data[3].x,
                     /*  4 */ edge_data[0].y,
-                    /*  5 */ edge_data[0].y, // 4 + X_INT[4]
+                    /*  5 */ edge_data[0].y,
                     /*  6 */ edge_data[1].y,
-                    /*  7 */ edge_data[1].y, // 6 + X_INT[6]
+                    /*  7 */ edge_data[1].y,
                     /*  8 */ edge_data[0].z,
-                    /*  9 */ edge_data[0].z, // 8 + X_INT[8]
+                    /*  9 */ edge_data[0].z,
                     /* 10 */ edge_data[2].z,
-                    /* 11 */ edge_data[2].z, // 10 + X_INT[10]
+                    /* 11 */ edge_data[2].z,
                 ];
-                // println!("{:?}", (y, z));
                 let mut indices_id = edge_data[0].indices_id;
                 for x in left_trim..=right_trim {
                     let edges = [
@@ -587,13 +512,13 @@ impl IsosurfaceExtractor {
                             /*  2 */ ids[2],
                             /*  3 */ ids[3],
                             /*  4 */ ids[4],
-                            /*  5 */ ids[4] + ((intersections >> 4) & 1) as u32, // 4 + X_INT[4]
+                            /*  5 */ ids[4] + ((intersections >> 4) & 1) as u32,
                             /*  6 */ ids[6],
-                            /*  7 */ ids[6] + ((intersections >> 6) & 1) as u32, // 6 + X_INT[6]
+                            /*  7 */ ids[6] + ((intersections >> 6) & 1) as u32,
                             /*  8 */ ids[8],
-                            /*  9 */ ids[8] + ((intersections >> 8) & 1) as u32, // 8 + X_INT[8]
+                            /*  9 */ ids[8] + ((intersections >> 8) & 1) as u32,
                             /* 10 */ ids[10],
-                            /* 11 */ ids[10] + ((intersections >> 10) & 1) as u32, // 10 + X_INT[10]
+                            /* 11 */ ids[10] + ((intersections >> 10) & 1) as u32,
                         ];
                     }
                     else {
@@ -603,13 +528,13 @@ impl IsosurfaceExtractor {
                             /*  2 */ ids[2] + ((intersections >> 2) & 1) as u32,
                             /*  3 */ ids[3] + ((intersections >> 3) & 1) as u32,
                             /*  4 */ ids[4],
-                            /*  5 */ ids[4] + ((intersections >> 4) & 1) as u32, // 4 + X_INT[4]
+                            /*  5 */ ids[4] + ((intersections >> 4) & 1) as u32,
                             /*  6 */ ids[6],
-                            /*  7 */ ids[6] + ((intersections >> 6) & 1) as u32, // 6 + X_INT[6]
+                            /*  7 */ ids[6] + ((intersections >> 6) & 1) as u32,
                             /*  8 */ ids[8],
-                            /*  9 */ ids[8] + ((intersections >> 8) & 1) as u32, // 8 + X_INT[8]
+                            /*  9 */ ids[8] + ((intersections >> 8) & 1) as u32,
                             /* 10 */ ids[10],
-                            /* 11 */ ids[10] + ((intersections >> 10) & 1) as u32, // 10 + X_INT[10]
+                            /* 11 */ ids[10] + ((intersections >> 10) & 1) as u32,
                         ];
                     }
                     
@@ -624,14 +549,12 @@ impl IsosurfaceExtractor {
 
                         let vert = vec3(x as f32, y as f32, z as f32)
                                + (VERTEX_POSITIONS[vertices.0] + VERTEX_POSITIONS[vertices.1]) / 2.0;
-                        // println!("{} \n {:#?}",x, ids);
                         let vert_id = ids[ORDER[edge as usize]];
                         vertices_buffer[vert_id as usize] = vert;
 
                         indices_buffer[indices_id as usize + index] = ids[ORDER[edge as usize]];
                         index += 1;
                     }
-                    // indices_buffer;
                     let triangle_count = TRIANGLE_COUNT[value] as u32;
                     indices_id += triangle_count * 3;
 
@@ -641,13 +564,13 @@ impl IsosurfaceExtractor {
                         /*  2 */ ids[2],
                         /*  3 */ ids[3],
                         /*  4 */ ids[5],
-                        /*  5 */ ids[5], // 4 + X_INT[4]
+                        /*  5 */ ids[5],
                         /*  6 */ ids[7],
-                        /*  7 */ ids[7], // 6 + X_INT[6]
+                        /*  7 */ ids[7],
                         /*  8 */ ids[9],
-                        /*  9 */ ids[9], // 8 + X_INT[8]
+                        /*  9 */ ids[9],
                         /* 10 */ ids[11],
-                        /* 11 */ ids[11], // 10 + X_INT[10]
+                        /* 11 */ ids[11],
                     ];
                     
                 }
@@ -726,24 +649,17 @@ pub fn test_map() -> (Vec<i8>, i8, usize) {
             (0, 0, 0),
             (1, 0, 0),
             (2, 0, 0),
-            // (3, 0, 0),
             (0, 0, 1),
             (0, 0, 2),
-            // (0, 0, 3),
         ];
         for set_coord in set_coords {
             map[coord_fn(set_coord)] = 5;
         }
-        
-        
-
-        
         (map, 2, SIZE)
     }
 #[cfg(test)]
 pub mod tests {
-    use bevy::{app::App, color::palettes::css::RED, math::{vec3, Vec3}, prelude::*, DefaultPlugins};
-    use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
+    use bevy::math::{vec3, Vec3};
 
     use crate::voxel_terrain::{march::{test_map, test_map_3, Metadata}, table::{EDGE_INTERSECTION, TRIANGLE_COUNT, TRIANGLE_TABLE}};
 
@@ -767,135 +683,17 @@ pub mod tests {
         let gd = GridBuffer { grid: map, size };
 
         let fe = IsosurfaceExtractor::new(isolevel);
-        //[0, 0, 2, 3, 3, 3, 3] 2 2 1
         let pass_1_results = fe.pass_1(&gd);
         let (y, z) = (3, 2);
-        //2, 3
         let start: usize = y * (gd.size - 1) + z * (gd.size - 1) * gd.size;
-        let asd = pass_1_results.0.iter().find(|x| *x == &255);
         for i in 0..gd.size - 1 {
             print!("{} ", pass_1_results.0[start + i]);
         }
         println!("{:?}", pass_1_results.1[y + z * gd.size])
-        // println!("{:?}", asd);
-    }
-    
-    fn metadata_testset() -> Vec<Metadata> {
-        vec![
-            Metadata {
-                yz: (
-                    0,
-                    0,
-                ),
-                left_trim: 0,
-                right_trim: 0,
-                x_intersects: 0,
-                y_intersects: 0,
-                z_intersects: 0,
-                tris_count: 1,
-            },
-            Metadata {
-                yz: (
-                    1,
-                    0,
-                ),
-                left_trim: 0,
-                right_trim: 0,
-                x_intersects: 0,
-                y_intersects: 0,
-                z_intersects: 1,
-                tris_count: 1,
-            },
-            Metadata {
-                yz: (
-                    2,
-                    0,
-                ),
-                left_trim: 0,
-                right_trim: 0,
-                x_intersects: 0,
-                y_intersects: 0,
-                z_intersects: 0,
-                tris_count: 0,
-            },
-            Metadata {
-                yz: (
-                    0,
-                    1,
-                ),
-                left_trim: 0,
-                right_trim: 0,
-                x_intersects: 0,
-                y_intersects: 1,
-                z_intersects: 0,
-                tris_count: 2,
-            },
-            Metadata {
-                yz: (
-                    1,
-                    1,
-                ),
-                left_trim: 1,
-                right_trim: 1,
-                x_intersects: 1,
-                y_intersects: 1,
-                z_intersects: 0,
-                tris_count: 3,
-            },
-            Metadata {
-                yz: (
-                    2,
-                    1,
-                ),
-                left_trim: 0,
-                right_trim: 0,
-                x_intersects: 0,
-                y_intersects: 0,
-                z_intersects: 1,
-                tris_count: 0,
-            },
-            Metadata {
-                yz: (
-                    0,
-                    2,
-                ),
-                left_trim: 0,
-                right_trim: 0,
-                x_intersects: 0,
-                y_intersects: 1,
-                z_intersects: 0,
-                tris_count: 0,
-            },
-            Metadata {
-                yz: (
-                    1,
-                    2,
-                ),
-                left_trim: 1,
-                right_trim: 1,
-                x_intersects: 1,
-                y_intersects: 0,
-                z_intersects: 0,
-                tris_count: 0,
-            },
-            Metadata {
-                yz: (
-                    2,
-                    2,
-                ),
-                left_trim: 1,
-                right_trim: 1,
-                x_intersects: 1,
-                y_intersects: 0,
-                z_intersects: 0,
-                tris_count: 0,
-            },
-        ]
     }
 
     #[test]
     fn pass_2() {
-        
         let (map, isolevel, size) = test_map();
 
         let gd = GridBuffer { grid: map, size };
@@ -903,12 +701,9 @@ pub mod tests {
         let fe = IsosurfaceExtractor::new(isolevel);
 
         let pass_1_results = fe.pass_1(&gd);
-        // println!("{:?}", pass_1_results.0);
 
         let metadata = IsosurfaceExtractor::pass_2(size, &pass_1_results.0, pass_1_results.1);
         println!("{:#?}", metadata);
-
-        //assert_eq!(metadata_testset(), metadata);
     }
     #[test]
     fn pass_3() {
@@ -919,7 +714,6 @@ pub mod tests {
         let fe = IsosurfaceExtractor::new(isolevel);
 
         let pass_1_results = fe.pass_1(&gd);
-        // println!("{:?}", pass_1_results.0);
 
         let metadata = IsosurfaceExtractor::pass_2(size, &pass_1_results.0, pass_1_results.1);
         let metadata = IsosurfaceExtractor::pass_3(metadata, size);
@@ -934,7 +728,6 @@ pub mod tests {
         let fe = IsosurfaceExtractor::new(isolevel);
 
         let pass_1_results = fe.pass_1(&gd);
-        // println!("{:?}", pass_1_results.0);
 
         let metadata = IsosurfaceExtractor::pass_2(size, &pass_1_results.0, pass_1_results.1);
         let metadata = IsosurfaceExtractor::pass_3(metadata, size);
@@ -951,7 +744,6 @@ pub mod tests {
         let fe = IsosurfaceExtractor::new(isolevel);
 
         let pass_1_results = fe.pass_1(&gd);
-        // println!("{:?}", pass_1_results.0);
 
         let metadata = IsosurfaceExtractor::pass_2(size, &pass_1_results.0, pass_1_results.1);
         let metadata = IsosurfaceExtractor::pass_3(metadata, size);
@@ -959,7 +751,7 @@ pub mod tests {
         let output = IsosurfaceExtractor::pass_4(size, metadata.0, metadata.1, metadata.2, &pass_1_results.0);
         
 
-        let final_output = IsosurfaceExtractor::final_output(output.0, output.1);
+        let _final_output = IsosurfaceExtractor::final_output(output.0, output.1);
     }
     #[test]
     fn triangle_count() {
