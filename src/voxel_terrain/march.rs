@@ -1,4 +1,4 @@
-use std::{fmt, ptr};
+use std::fmt;
 
 use crate::voxel_terrain::table::{EDGE_INTERSECTION, TRIANGLE_COUNT};
 
@@ -6,11 +6,11 @@ use super::{
     table::{EDGE_VERTEX_INDICES, ORDER, TRIANGLE_TABLE, VERTEX_POSITIONS}, util::XYZ,
 };
 use bevy::{
-    asset::RenderAssetUsages, color::palettes::css::{BLUE, GREEN, RED}, math::vec3, prelude::*, render::mesh::{Indices, PrimitiveTopology}
+    asset::RenderAssetUsages, color::palettes::css::{BLUE, GREEN, RED}, math::vec3, prelude::*, render::{mesh::{Indices, PrimitiveTopology}, render_resource::Face}
 };
 
 fn test_test_test() -> (Vec<i8>, i8, usize) {
-    test_map_4()
+    test_map_2(4)
 }
 
 pub fn setup(mut commands: Commands,
@@ -33,19 +33,19 @@ pub fn setup(mut commands: Commands,
             println!("{:?}", m);
         }
         
-        let output = IsosurfaceExtractor::pass_4(size, metadata.0, metadata.1, metadata.2, &pass_1_results.0);
+        let output = fe.pass_4(&gd, metadata.0, metadata.1, metadata.2, &pass_1_results.0);
         
         println!("\nIndices:\n{:?}", output.0);
         println!("Vertices:\n{:?}", output.1);
-
-        // let cube_mesh_handle: Handle<Mesh> = meshes.add(IsosurfaceExtractor::final_output(output.0, output.1));
-        let cube_mesh_handle = meshes.add(fe.marching_cubes(gd));
+        
+        let cube_mesh_handle: Handle<Mesh> = meshes.add(IsosurfaceExtractor::final_output(output.0, output.1));
+        // let cube_mesh_handle = meshes.add(fe.marching_cubes(gd));
         // Render the mesh with the custom texture, and add the marker.
         commands.spawn((
             Mesh3d(cube_mesh_handle),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgb(1.0, 0.0, 0.0),
-                cull_mode: None,
+                cull_mode: Some(Face::Back),
                 ..default()
             })),
             
@@ -180,7 +180,7 @@ impl IsosurfaceExtractor {
         let pass_2_results = IsosurfaceExtractor::pass_2(size, &pass_1_results.0, pass_1_results.1);
         let pass_3_results = IsosurfaceExtractor::pass_3(pass_2_results, size);
 
-        let output = IsosurfaceExtractor::pass_4(size, pass_3_results.0, pass_3_results.1, pass_3_results.2, &pass_1_results.0);
+        let output = self.pass_4(&grid, pass_3_results.0, pass_3_results.1, pass_3_results.2, &pass_1_results.0);
     
 
         Self::final_output(output.0, output.1)
@@ -252,13 +252,8 @@ impl IsosurfaceExtractor {
     fn pass_1(&self, grid_buffer: &GridBuffer) -> (Vec<u8>, Vec<Metadata>) {
         let size = grid_buffer.size;
         let buffer_length = size - 1;
-        let mut edge_buffer = Vec::with_capacity(buffer_length * size.pow(2));
-        let mut edge_data = Vec::with_capacity(size.pow(2));
-
-        unsafe {
-            edge_buffer.set_len(buffer_length * size.pow(2));
-            edge_data.set_len(size.pow(2));
-        }
+        let mut edge_buffer = vec![0u8; buffer_length * size.pow(2)];
+        let mut edge_data = vec![Metadata::default(); size.pow(2)];
 
         for y in 0..size {
             for z in 0..size {
@@ -268,16 +263,15 @@ impl IsosurfaceExtractor {
                 let buffer_index = y * buffer_length + z * buffer_length * size;
 
                 let mut increment = 0;
-                let mut xl = 0;
+                // Trim bounds. `xl` starts past the end so an empty row yields
+                // `xl > xr`, which makes `xl..=xr` an empty range downstream.
+                let mut xl = buffer_length;
                 let mut xr = 0;
 
                 let mut x_intersects = 0;
 
                 while increment < buffer_length {
                     let index = increment + start_index;
-                    if increment >= size - 1 {
-                        break;
-                    }
                     let mut edge_case: u8 = 0;
                     let x_edge = (grid_buffer.grid[index], grid_buffer.grid[index + 1]);
 
@@ -289,28 +283,38 @@ impl IsosurfaceExtractor {
                         edge_case |= 1 << 1;
                     }
 
-                    if edge_case > 0 && edge_case != 3 {
-                        if xl == 0 {
+                    // The trim has to bound every cell that can produce
+                    // geometry, not just the cells with a cut X edge. A cell
+                    // is empty only when all eight corners are outside, so the
+                    // bound is "this edge has at least one corner inside".
+                    // Trimming on cut edges alone drops whole surfaces (a flat
+                    // slab cuts only Y edges) and makes the vertex counts in
+                    // pass 2 disagree with the writes in pass 4.
+                    if edge_case != 0 {
+                        if increment < xl {
                             xl = increment;
-                        }
-                        if edge_case != 3 {
-                            x_intersects += 1;
                         }
                         xr = increment;
                     }
 
+                    // Only an edge with exactly one corner inside emits a vertex.
+                    if edge_case == 1 || edge_case == 2 {
+                        x_intersects += 1;
+                    }
+
                     edge_buffer[buffer_index + increment] = edge_case;
-                    edge_data[y + z * size] = Metadata {
-                        left_trim: xl,
-                        right_trim: xr,
-                        x_intersects,
-                        y_intersects: 0,
-                        z_intersects: 0,
-                        tris_count: 0,
-                        yz: (0, 0),
-                    };
                     increment += 1;
                 }
+
+                edge_data[y + z * size] = Metadata {
+                    left_trim: xl,
+                    right_trim: xr,
+                    x_intersects,
+                    y_intersects: 0,
+                    z_intersects: 0,
+                    tris_count: 0,
+                    yz: (y, z),
+                };
             }
         }
 
@@ -324,31 +328,30 @@ impl IsosurfaceExtractor {
 
         for y in 0..=max_index {
             for z in 0..=max_index {
-                let edge_data = unsafe {
-                    [
-                        ptr::addr_of_mut!(edge_data[y + z * size]).as_mut().unwrap(),
-                        ptr::addr_of_mut!(edge_data[y + (z + 1) * size]).as_mut().unwrap(),
-                        ptr::addr_of_mut!(edge_data[(y + 1) + z * size]).as_mut().unwrap(),
-                        ptr::addr_of_mut!(edge_data[(y + 1) + (z + 1) * size]).as_mut().unwrap(),
-                    ]
-                };
+                // The four X-edge rows bounding this row of cells.
+                let rows = [
+                    /* (y,   z  ) */ y + z * size,
+                    /* (y,   z+1) */ y + (z + 1) * size,
+                    /* (y+1, z  ) */ (y + 1) + z * size,
+                    /* (y+1, z+1) */ (y + 1) + (z + 1) * size,
+                ];
 
                 // Adjusted trim values.
                 let (left_trim, right_trim, _x_intersects) = {
                     let (left_trim, right_trim) = {
-                        let mut left_trim = edge_data[0].left_trim;
-                        let mut right_trim = edge_data[0].right_trim;
-                        for data in &edge_data {
-                            if data.left_trim < left_trim {
-                                left_trim = data.left_trim;
+                        let mut left_trim = edge_data[rows[0]].left_trim;
+                        let mut right_trim = edge_data[rows[0]].right_trim;
+                        for &row in &rows {
+                            if edge_data[row].left_trim < left_trim {
+                                left_trim = edge_data[row].left_trim;
                             }
-                            if data.right_trim > right_trim {
-                                right_trim = data.right_trim;
+                            if edge_data[row].right_trim > right_trim {
+                                right_trim = edge_data[row].right_trim;
                             }
                         }
                         (left_trim, right_trim)
                     };
-                    let x_intersects = edge_data[0].x_intersects;
+                    let x_intersects = edge_data[rows[0]].x_intersects;
                     (left_trim, right_trim, x_intersects)
                 };
                 let mut y_intersects: u32 = 0;
@@ -382,35 +385,27 @@ impl IsosurfaceExtractor {
                         z_intersects += ((edge_intersections >> 9) & 1) as u32;
                     }
                     if y == max_index {
-                        edge_data[2].z_intersects += ((edge_intersections >> 10) & 1) as u32;
+                        edge_data[rows[2]].z_intersects += ((edge_intersections >> 10) & 1) as u32;
                     }
 
                     if z == max_index {
-                        edge_data[1].y_intersects += ((edge_intersections >> 6) & 1) as u32;
+                        edge_data[rows[1]].y_intersects += ((edge_intersections >> 6) & 1) as u32;
                     }
 
                     if x == x_max && y == max_index {
-                        edge_data[2].z_intersects += ((edge_intersections >> 11) & 1) as u32;
+                        edge_data[rows[2]].z_intersects += ((edge_intersections >> 11) & 1) as u32;
                     }
 
                     if x == x_max && z == max_index {
-                        edge_data[1].y_intersects += ((edge_intersections >> 7) & 1) as u32;
+                        edge_data[rows[1]].y_intersects += ((edge_intersections >> 7) & 1) as u32;
                     }
                 }
-                // Last X
-                edge_data[0].tris_count = tris_count;
-                edge_data[0].y_intersects = y_intersects;
-                edge_data[0].z_intersects = z_intersects;
-                edge_data[0].yz = (y, z);
-                if z == max_index {
-                    edge_data[1].yz = (y, z+1);
-                }
-                if y == max_index {
-                    edge_data[2].yz = (y+1, z);
-                }
-                if z == max_index && y == max_index {
-                    edge_data[3].yz = (y+z, z+1); 
-                }
+                // This row of cells owns the X edges of row (y, z) plus the
+                // Y/Z edges hanging off its near side; the boundary edges were
+                // already added straight onto the neighbouring rows above.
+                edge_data[rows[0]].tris_count += tris_count;
+                edge_data[rows[0]].y_intersects += y_intersects;
+                edge_data[rows[0]].z_intersects += z_intersects;
             }
         }
         edge_data
@@ -436,24 +431,20 @@ impl IsosurfaceExtractor {
             edge_ids.push(edge);
         }
         let indices_len = (triangle_count * 3) as usize;
-        let mut indices: Vec<u32> = Vec::with_capacity(indices_len);
-        unsafe {
-            indices.set_len(indices_len);
-        }
+        let indices: Vec<u32> = vec![0; indices_len];
         let vertices_len = (overall) as usize;
-        let mut vertices: Vec<Vec3> = Vec::with_capacity(vertices_len);
-        unsafe {
-            vertices.set_len(vertices_len);
-        }
+        let vertices: Vec<Vec3> = vec![Vec3::ZERO; vertices_len];
         (edge_ids, indices, vertices)
     }
     fn pass_4(
-        size: usize,
+        &self,
+        grid: &GridBuffer,
         edge_ids: Vec<EdgeID>,
         mut indices_buffer: Vec<u32>,
         mut vertices_buffer: Vec<Vec3>,
         edge_buffer: &Vec<u8>,
     ) -> (Vec<u32>, Vec<Vec3>) {
+        let size = grid.size;
         let real_size = size - 1;
         let buffer_length = size - 1;
         for y in 0..real_size {
@@ -477,6 +468,11 @@ impl IsosurfaceExtractor {
                     }
                     (left_trim, right_trim)
                 };
+
+                // This gets the IDs for each corner.
+                // An ID in this case is the position of a vert,
+                // in the vertex buffer, so this is more of the indice
+                // of the mesh.
                 let mut ids = [
                     /*  0 */ edge_data[0].x,
                     /*  1 */ edge_data[1].x,
@@ -499,48 +495,46 @@ impl IsosurfaceExtractor {
                         edge_buffer[y * buffer_length + (z + 1) * buffer_length * size + x],
                         edge_buffer[(y + 1) * buffer_length + (z + 1) * buffer_length * size + x],
                     ];
+
+                    // Which marching cube case is it.
                     let mut value: u8 = 0;
                     for i in 0..4 {
                         value |= edges[i] << (i * 2);
                     }
+
+                    // Convert value to usize to use in indexing.
                     let value = value as usize;
+                    // This gets a 12 bit number of which edges are intersected,
+                    // it then uses this to increment each vertex, and indice.
                     let intersections = EDGE_INTERSECTION[value]; 
-                    if x == left_trim {
-                        ids = [
-                            /*  0 */ ids[0],
-                            /*  1 */ ids[1],
-                            /*  2 */ ids[2],
-                            /*  3 */ ids[3],
-                            /*  4 */ ids[4],
-                            /*  5 */ ids[4] + ((intersections >> 4) & 1) as u32,
-                            /*  6 */ ids[6],
-                            /*  7 */ ids[6] + ((intersections >> 6) & 1) as u32,
-                            /*  8 */ ids[8],
-                            /*  9 */ ids[8] + ((intersections >> 8) & 1) as u32,
-                            /* 10 */ ids[10],
-                            /* 11 */ ids[10] + ((intersections >> 10) & 1) as u32,
-                        ];
-                    }
-                    else {
-                        ids = [
-                            /*  0 */ ids[0] + ((intersections >> 0) & 1) as u32,
-                            /*  1 */ ids[1] + ((intersections >> 1) & 1) as u32,
-                            /*  2 */ ids[2] + ((intersections >> 2) & 1) as u32,
-                            /*  3 */ ids[3] + ((intersections >> 3) & 1) as u32,
-                            /*  4 */ ids[4],
-                            /*  5 */ ids[4] + ((intersections >> 4) & 1) as u32,
-                            /*  6 */ ids[6],
-                            /*  7 */ ids[6] + ((intersections >> 6) & 1) as u32,
-                            /*  8 */ ids[8],
-                            /*  9 */ ids[8] + ((intersections >> 8) & 1) as u32,
-                            /* 10 */ ids[10],
-                            /* 11 */ ids[10] + ((intersections >> 10) & 1) as u32,
-                        ];
-                    }
-                    
+
+
+                    // We are going along the positive X axis, so the four
+                    // "far side" edges of this cell are one step further along
+                    // X in their own row than the near-side ones.
+                    // (see table.rs for the bit layout)
+                    // Vert 5 is Vert 4's ID + whether Vert 4's edge was cut.
+                    ids[5] = ids[4] + ((intersections >> 4) & 1) as u32;
+                    ids[7] = ids[6] + ((intersections >> 6) & 1) as u32;
+                    ids[9] = ids[8] + ((intersections >> 8) & 1) as u32;
+                    ids[11] = ids[10] + ((intersections >> 10) & 1) as u32;
+
                     let marching_case = TRIANGLE_TABLE[value];
                     let mut index = 0;
-                    
+
+                    // Corner scalars, needed to place the vertex on the
+                    // isosurface rather than at the edge midpoint.
+                    let corners = [
+                        grid.get((x, y, z)),
+                        grid.get((x + 1, y, z)),
+                        grid.get((x, y + 1, z)),
+                        grid.get((x + 1, y + 1, z)),
+                        grid.get((x, y, z + 1)),
+                        grid.get((x + 1, y, z + 1)),
+                        grid.get((x, y + 1, z + 1)),
+                        grid.get((x + 1, y + 1, z + 1)),
+                    ];
+
                     loop {
                         let edge = marching_case[index];
                         if edge == -1 { break; }
@@ -548,31 +542,33 @@ impl IsosurfaceExtractor {
                         let vertices = EDGE_VERTEX_INDICES[edge as usize];
 
                         let vert = vec3(x as f32, y as f32, z as f32)
-                               + (VERTEX_POSITIONS[vertices.0] + VERTEX_POSITIONS[vertices.1]) / 2.0;
+                            + interpolation(
+                                (VERTEX_POSITIONS[vertices.0], VERTEX_POSITIONS[vertices.1]),
+                                (corners[vertices.0], corners[vertices.1]),
+                                self.isolevel,
+                            );
                         let vert_id = ids[ORDER[edge as usize]];
                         vertices_buffer[vert_id as usize] = vert;
 
-                        indices_buffer[indices_id as usize + index] = ids[ORDER[edge as usize]];
+                        indices_buffer[indices_id as usize + index] = vert_id;
                         index += 1;
                     }
                     let triangle_count = TRIANGLE_COUNT[value] as u32;
                     indices_id += triangle_count * 3;
 
-                    ids = [
-                        /*  0 */ ids[0],
-                        /*  1 */ ids[1],
-                        /*  2 */ ids[2],
-                        /*  3 */ ids[3],
-                        /*  4 */ ids[5],
-                        /*  5 */ ids[5],
-                        /*  6 */ ids[7],
-                        /*  7 */ ids[7],
-                        /*  8 */ ids[9],
-                        /*  9 */ ids[9],
-                        /* 10 */ ids[11],
-                        /* 11 */ ids[11],
-                    ];
-                    
+                    // Advance to the next cell along +X. The X-edge IDs step by
+                    // whether *this* cell's X edge was cut, so this has to
+                    // happen after the triangles are emitted -- doing it at the
+                    // top of the loop shifted every X vertex by one slot.
+                    ids[0] += ((intersections >> 0) & 1) as u32;
+                    ids[1] += ((intersections >> 1) & 1) as u32;
+                    ids[2] += ((intersections >> 2) & 1) as u32;
+                    ids[3] += ((intersections >> 3) & 1) as u32;
+                    // The far-side Y/Z edges become the next cell's near side.
+                    ids[4] = ids[5];
+                    ids[6] = ids[7];
+                    ids[8] = ids[9];
+                    ids[10] = ids[11];
                 }
             }
         }
@@ -624,8 +620,12 @@ pub fn test_map() -> (Vec<i8>, i8, usize) {
     }
     pub fn test_map_2(size: usize) -> (Vec<i8>, i8, usize) {
         let mut map = vec![0; size.pow(3)];
-        for y in 1..size - 1 {
-            map[size * y] = 4;
+        for z in 1..size - 1 {
+            for y in 1..size - 1 {
+                for x in 1..size - 1 {
+                    map[x+size * y+z*size*size] = 4;
+                }
+            }
         }
         (map, 2, size)
     }
@@ -661,9 +661,305 @@ pub fn test_map() -> (Vec<i8>, i8, usize) {
 pub mod tests {
     use bevy::math::{vec3, Vec3};
 
-    use crate::voxel_terrain::{march::{test_map, test_map_3, Metadata}, table::{EDGE_INTERSECTION, TRIANGLE_COUNT, TRIANGLE_TABLE}};
+    use crate::voxel_terrain::{march::{test_map, test_map_3}, table::{EDGE_INTERSECTION, TRIANGLE_COUNT, TRIANGLE_TABLE}};
 
     use super::{GridBuffer, IsosurfaceExtractor};
+
+    use crate::voxel_terrain::table::{EDGE_VERTEX_INDICES, VERTEX_POSITIONS};
+
+    /// Quantised triangle, so positions compare exactly despite float noise.
+    type Tri = [[i32; 3]; 3];
+
+    /// Snap to a 1/1024 grid. The two implementations compute the same
+    /// interpolation from different directions on shared edges, which can
+    /// differ by an ULP; the test maps never land near a snap boundary.
+    fn quant(v: f32) -> i32 {
+        (v * 1024.0).round() as i32
+    }
+
+    /// Brute-force marching cubes using the *same* midpoint placement that
+    /// pass_4 uses, so the two can be compared triangle-for-triangle.
+    fn reference_triangles(map: &[i8], size: usize, isolevel: i8) -> Vec<Tri> {
+        let mut out = Vec::new();
+        let at = |x: usize, y: usize, z: usize| map[x + y * size + z * size * size];
+        for z in 0..size - 1 {
+            for y in 0..size - 1 {
+                for x in 0..size - 1 {
+                    let corners = [
+                        at(x, y, z),
+                        at(x + 1, y, z),
+                        at(x, y + 1, z),
+                        at(x + 1, y + 1, z),
+                        at(x, y, z + 1),
+                        at(x + 1, y, z + 1),
+                        at(x, y + 1, z + 1),
+                        at(x + 1, y + 1, z + 1),
+                    ];
+                    let mut value = 0usize;
+                    for i in 0..8 {
+                        if corners[i] <= isolevel {
+                            value |= 1 << i;
+                        }
+                    }
+                    let case = TRIANGLE_TABLE[value];
+                    let mut i = 0;
+                    while case[i] != -1 {
+                        let mut tri: Tri = [[0; 3]; 3];
+                        for k in 0..3 {
+                            let e = case[i + k] as usize;
+                            let (a, b) = EDGE_VERTEX_INDICES[e];
+                            let m = super::interpolation(
+                                (VERTEX_POSITIONS[a], VERTEX_POSITIONS[b]),
+                                (corners[a], corners[b]),
+                                isolevel,
+                            );
+                            tri[k] = [
+                                quant(x as f32 + m.x),
+                                quant(y as f32 + m.y),
+                                quant(z as f32 + m.z),
+                            ];
+                        }
+                        out.push(tri);
+                        i += 3;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn flying_edges_triangles(map: Vec<i8>, size: usize, isolevel: i8) -> Vec<Tri> {
+        let gd = GridBuffer { grid: map, size };
+        let fe = IsosurfaceExtractor::new(isolevel);
+        let p1 = fe.pass_1(&gd);
+        let p2 = IsosurfaceExtractor::pass_2(size, &p1.0, p1.1);
+        let p3 = IsosurfaceExtractor::pass_3(p2, size);
+        let (indices, vertices) = fe.pass_4(&gd, p3.0, p3.1, p3.2, &p1.0);
+
+        assert_eq!(indices.len() % 3, 0, "index buffer is not a multiple of 3");
+
+        // Passes 2 and 3 size the vertex buffer by counting cut edges. If that
+        // count is right, every slot is written exactly once and referenced at
+        // least once -- an over-count leaves holes, an under-count overflows.
+        let mut used = vec![false; vertices.len()];
+        for &i in &indices {
+            used[i as usize] = true;
+        }
+        let unused: Vec<usize> = used
+            .iter()
+            .enumerate()
+            .filter(|(_, &u)| !u)
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            unused.is_empty(),
+            "{} of {} vertex slots were allocated but never referenced \
+             (pass 2/3 over-counted intersections): {:?}",
+            unused.len(),
+            vertices.len(),
+            &unused[..unused.len().min(16)],
+        );
+        assert!(
+            vertices.iter().all(|v| v.is_finite()),
+            "vertex buffer contains non-finite positions",
+        );
+        let mut out = Vec::new();
+        for t in indices.chunks(3) {
+            let mut tri: Tri = [[0; 3]; 3];
+            for k in 0..3 {
+                let v = vertices[t[k] as usize];
+                tri[k] = [quant(v.x), quant(v.y), quant(v.z)];
+            }
+            out.push(tri);
+        }
+        out
+    }
+
+    /// Rotate a triangle so it starts at its smallest vertex: keeps winding
+    /// but makes the comparison independent of which corner is listed first.
+    fn canonical(mut t: Tri) -> Tri {
+        let min = (0..3).min_by_key(|&i| t[i]).unwrap();
+        t.rotate_left(min);
+        t
+    }
+
+    fn compare(name: &str, map: Vec<i8>, size: usize, isolevel: i8) {
+        let mut expected: Vec<Tri> = reference_triangles(&map, size, isolevel)
+            .into_iter()
+            .map(canonical)
+            .collect();
+        let mut actual: Vec<Tri> = flying_edges_triangles(map, size, isolevel)
+            .into_iter()
+            .map(canonical)
+            .collect();
+        expected.sort();
+        actual.sort();
+
+        if expected != actual {
+            let missing: Vec<_> = expected.iter().filter(|t| !actual.contains(t)).collect();
+            let extra: Vec<_> = actual.iter().filter(|t| !expected.contains(t)).collect();
+            panic!(
+                "{name}: flying edges != reference marching cubes\n\
+                 expected {} tris, got {} tris\n\
+                 {} missing (first 8): {:?}\n\
+                 {} spurious (first 8): {:?}",
+                expected.len(),
+                actual.len(),
+                missing.len(),
+                &missing[..missing.len().min(8)],
+                extra.len(),
+                &extra[..extra.len().min(8)],
+            );
+        }
+    }
+
+    #[test]
+    fn fe_matches_reference_solid_shell_4() {
+        let (map, isolevel, size) = super::test_map_2(4);
+        compare("test_map_2(4)", map, size, isolevel);
+    }
+
+    #[test]
+    fn fe_matches_reference_solid_shell_8() {
+        let (map, isolevel, size) = super::test_map_2(8);
+        compare("test_map_2(8)", map, size, isolevel);
+    }
+
+    #[test]
+    fn fe_matches_reference_single_voxel() {
+        let (map, isolevel, size) = test_map_3();
+        compare("test_map_3", map, size, isolevel);
+    }
+
+    #[test]
+    fn fe_matches_reference_terrain_8() {
+        let (map, isolevel, size) = test_map();
+        compare("test_map", map, size, isolevel);
+    }
+
+    #[test]
+    fn fe_matches_reference_flat_slab() {
+        // A horizontal slab: no x-axis edge is ever *cut*, only y-axis edges
+        // are. This is the case an x-cut-based trim throws away.
+        let size = 6;
+        let mut map = vec![5i8; size * size * size];
+        for z in 0..size {
+            for y in 0..3 {
+                for x in 0..size {
+                    map[x + y * size + z * size * size] = 0;
+                }
+            }
+        }
+        compare("flat_slab", map, size, 2);
+    }
+
+    #[test]
+    fn winding_faces_away_from_the_solid() {
+        // Convention check. TRIANGLE_TABLE winds each triangle so its normal
+        // points toward the corners whose bit is SET, and the code sets that
+        // bit for `value <= isolevel`. So `<= isolevel` is empty space and
+        // `> isolevel` is solid -- which is how the test maps are written
+        // (test_map_3 sets a voxel to 5 to make it solid).
+        //
+        // Under that convention normals point out of the solid, which is what
+        // wgpu's default Ccw / cull-Back and StandardMaterial lighting expect.
+        // Feeding a field with the opposite sense makes the mesh inside-out:
+        // invisible from outside and lit from within.
+        let size = 24;
+        let c = (size as f32 - 1.0) / 2.0;
+        let centre = vec3(c, c, c);
+        let mut map = vec![0i8; size * size * size];
+        for z in 0..size {
+            for y in 0..size {
+                for x in 0..size {
+                    let d = (vec3(x as f32, y as f32, z as f32) - centre).length();
+                    // Solid ball: high inside, low outside, surface at d == 8.
+                    let mut v = ((8.0 - d) * 3.0).clamp(-40.0, 40.0) as i8 + 2;
+                    // A sample sitting exactly on the isolevel interpolates to
+                    // t == 0, collapsing vertices onto grid corners and
+                    // emitting zero-area triangles. Legal marching cubes
+                    // output, but it has no normal to check, so nudge past it.
+                    if v == 2 {
+                        v = 3;
+                    }
+                    map[x + y * size + z * size * size] = v;
+                }
+            }
+        }
+
+        let gd = GridBuffer { grid: map, size };
+        let fe = IsosurfaceExtractor::new(2);
+        let p1 = fe.pass_1(&gd);
+        let p2 = IsosurfaceExtractor::pass_2(size, &p1.0, p1.1);
+        let p3 = IsosurfaceExtractor::pass_3(p2, size);
+        let (indices, vertices) = fe.pass_4(&gd, p3.0, p3.1, p3.2, &p1.0);
+
+        let mut inward = 0;
+        let mut outward = 0;
+        let mut degenerate = 0;
+        for t in indices.chunks(3) {
+            let (a, b, c2) = (
+                vertices[t[0] as usize],
+                vertices[t[1] as usize],
+                vertices[t[2] as usize],
+            );
+            let normal = (b - a).cross(c2 - a);
+            let radial = (a + b + c2) / 3.0 - centre;
+            if normal.length() < 1e-6 {
+                degenerate += 1;
+                continue;
+            }
+            if normal.dot(radial) > 0.0 {
+                outward += 1;
+            } else {
+                inward += 1;
+            }
+        }
+        assert!(outward > 0, "no triangles were generated");
+        assert_eq!(degenerate, 0, "unexpected zero-area triangles");
+        assert_eq!(
+            inward, 0,
+            "{inward} of {} triangles wind inward (surface is inside-out)",
+            inward + outward
+        );
+    }
+
+    #[test]
+    fn fe_matches_reference_sphere() {
+        // Closest thing to real terrain: a large solid interior (long runs of
+        // case 255) with a smooth shell, so the trim has to survive both.
+        let size = 24;
+        let mut map = vec![0i8; size * size * size];
+        let c = (size as f32 - 1.0) / 2.0;
+        for z in 0..size {
+            for y in 0..size {
+                for x in 0..size {
+                    let d = ((x as f32 - c).powi(2)
+                        + (y as f32 - c).powi(2)
+                        + (z as f32 - c).powi(2))
+                    .sqrt();
+                    // Inside the sphere is <= isolevel, matching the rest of
+                    // the code's "solid means below the isolevel" convention.
+                    map[x + y * size + z * size * size] =
+                        (d - 8.0).clamp(-6.0, 6.0) as i8 + 2;
+                }
+            }
+        }
+        compare("sphere", map, size, 2);
+    }
+
+    #[test]
+    fn fe_matches_reference_pseudo_random() {
+        // Deterministic LCG so the case coverage is wide.
+        let size = 10;
+        let mut state: u32 = 0x1234_5678;
+        let mut map = vec![0i8; size * size * size];
+        for v in map.iter_mut() {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *v = ((state >> 16) % 5) as i8;
+        }
+        compare("pseudo_random", map, size, 2);
+    }
 
     
     #[test]
@@ -732,7 +1028,7 @@ pub mod tests {
         let metadata = IsosurfaceExtractor::pass_2(size, &pass_1_results.0, pass_1_results.1);
         let metadata = IsosurfaceExtractor::pass_3(metadata, size);
 
-        let output = IsosurfaceExtractor::pass_4(size, metadata.0, metadata.1, metadata.2, &pass_1_results.0);
+        let output = fe.pass_4(&gd, metadata.0, metadata.1, metadata.2, &pass_1_results.0);
         println!("{:#?}", output);
     }
     #[test]
@@ -748,7 +1044,7 @@ pub mod tests {
         let metadata = IsosurfaceExtractor::pass_2(size, &pass_1_results.0, pass_1_results.1);
         let metadata = IsosurfaceExtractor::pass_3(metadata, size);
 
-        let output = IsosurfaceExtractor::pass_4(size, metadata.0, metadata.1, metadata.2, &pass_1_results.0);
+        let output = fe.pass_4(&gd, metadata.0, metadata.1, metadata.2, &pass_1_results.0);
         
 
         let _final_output = IsosurfaceExtractor::final_output(output.0, output.1);

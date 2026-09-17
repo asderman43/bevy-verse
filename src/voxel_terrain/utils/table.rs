@@ -124,8 +124,9 @@ pub const TRIANGLE_COUNT: [u8; 256] = {
 pub const ORDER: [usize; 12] = [0, 5, 2, 4, 1, 7, 3, 6, 8, 9, 11, 10];
 /// X Y Z edges, 4 bits for each edge, if they are intersected or not.
 pub const EDGE_INTERSECTION: [u16; 256] = {
-    const ORDER: [usize; 12] = [0, 5, 2, 4, 1, 7, 3, 6, 8, 9, 11, 10];
-
+    // Creates a table of which edges are intersected.
+    // For example first 0, 8, 3 creates usize(64 bit) of
+    // (first 12 bits) 1001_0000_1000
     let mut array = [0; 256];
 
     let mut index = 0;
@@ -139,8 +140,11 @@ pub const EDGE_INTERSECTION: [u16; 256] = {
         let mut index_2 = 0;
 
         while TRIANGLE_TABLE[index][index_2] != -1 {
+            // This means triangle 0, 8, 3
             let edge = TRIANGLE_TABLE[index][index_2] as usize;
+            
 
+            // This creates the integer.
             val |= 1 << ORDER[edge];
 
             index_2 += 1;

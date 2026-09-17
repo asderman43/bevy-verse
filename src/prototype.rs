@@ -14,4 +14,9 @@ fn init(mut commands: Commands) {
         Transform::from_translation(Vec3::new(0.0, 1.5, 5.0)),
         PanOrbitCamera::default(),
     ));
+    
+    commands.insert_resource(AmbientLight {
+        brightness: 1000.0,
+        ..default()
+    });
 }
