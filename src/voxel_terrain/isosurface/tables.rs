@@ -417,3 +417,44 @@ pub const TRIANGLE_TABLE: [[i8; 16]; 256] = [
         -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
     ],
 ];
+
+/// For each of the 12 cube edges: which axis it runs along (0 = X, 1 = Y,
+/// 2 = Z) and the cell-local offset of its lower corner.
+///
+/// This is what lets marching cubes weld its output: two neighbouring cells
+/// that share an edge see it under different edge numbers, but they agree on
+/// (axis, lower corner), so that pair is a stable key for the shared vertex.
+///
+/// Derived from [`EDGE_VERTEX_INDICES`] at compile time so it cannot drift out
+/// of sync with the rest of the tables.
+pub const EDGE_AXIS_ORIGIN: [(usize, usize, usize, usize); 12] = {
+    let mut table = [(0usize, 0usize, 0usize, 0usize); 12];
+
+    let mut edge = 0;
+    while edge < 12 {
+        let (a, b) = EDGE_VERTEX_INDICES[edge];
+
+        // Corner index -> position, per this file's coordinate convention.
+        let (ax, ay, az) = (a & 1, (a >> 1) & 1, (a >> 2) & 1);
+        let (bx, by, bz) = (b & 1, (b >> 1) & 1, (b >> 2) & 1);
+
+        let axis = if ax != bx {
+            0
+        } else if ay != by {
+            1
+        } else {
+            2
+        };
+
+        table[edge] = (
+            axis,
+            if ax < bx { ax } else { bx },
+            if ay < by { ay } else { by },
+            if az < bz { az } else { bz },
+        );
+
+        edge += 1;
+    }
+
+    table
+};

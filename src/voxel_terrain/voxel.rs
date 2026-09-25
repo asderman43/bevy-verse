@@ -1,14 +1,4 @@
-use bevy::{
-    asset::RenderAssetUsages,
-    math::vec3,
-    prelude::*,
-    render::mesh::{Indices, PrimitiveTopology},
-};
-
-use super::{
-    table::*,
-    util::{position_from_index, XYZ},
-};
+use bevy::prelude::*;
 
 pub struct VoxelMap {
     pub id: IVec3,

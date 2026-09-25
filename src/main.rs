@@ -4,7 +4,10 @@ use bevy::{
     text::FontSmoothing,
 };
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
-use bevy_verse::voxel_terrain::{MarchingCubesPlugin, VoxelTerrainPlugin};
+use bevy_verse::voxel_terrain::{
+    isosurface::{debug::IsosurfaceDebugPlugin, IsosurfacePlugin},
+    VoxelTerrainPlugin,
+};
 
 mod prototype;
 
@@ -14,7 +17,8 @@ fn main() {
             DefaultPlugins,
             prototype::PrototypePlugin,
             VoxelTerrainPlugin,
-            MarchingCubesPlugin,
+            IsosurfacePlugin,
+            IsosurfaceDebugPlugin,
             FpsOverlayPlugin {
                 config: FpsOverlayConfig {
                     text_config: TextFont {
