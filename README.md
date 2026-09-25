@@ -42,6 +42,7 @@ Dependencies pinned in `Cargo.toml`:
 | `bevy` | `0.16.0` (features: `bevy_dev_tools`, `bevy_remote`) | Engine, rendering, FPS overlay, gizmos |
 | `bevy_panorbit_camera` | `0.26` | Orbit/pan camera for inspecting the mesh |
 | `avian3d` | git (`main`) | Physics (declared; not yet used by the meshing code) |
+| `mimalloc` | `0.1` | Global allocator (app and benchmark), see [Performance](#performance) |
 
 Because `avian3d` is pulled from a git branch, builds track upstream and may
 occasionally break if that branch changes — pin a specific rev if you want
@@ -274,8 +275,17 @@ either side. Write positions and indices straight to their reserved slots via
 `TRIANGLE_TABLE` and the `ORDER` remap.
 
 The output is a **welded** indexed mesh with no deduplication step: one vertex
-per cut edge, shared by every cell touching it, which is what makes the computed
-normals smooth. That's what terrain and water want.
+per cut edge, shared by every cell touching it. That's what terrain and water
+want.
+
+**Normals are the density gradient.** When the owner cell writes a vertex, it
+also writes its normal: the gradient at the edge's two corners (central
+differences of the neighbouring samples, one-sided on the buffer's faces),
+blended by the same `t` as the position and negated, since density rises into
+the solid. It needs only the voxel buffer, so it has the same owner and moment as
+the position write. Where the two gradients cancel, which only happens on a
+sample sitting exactly on the isolevel, it falls back to the edge's direction
+from its solid end to its empty end.
 
 **Ownership: pass 4 writes exactly what pass 2 counted.** Pass 2 is already the
 pass that decides which row a vertex belongs to, boundary hand-offs included,
@@ -316,7 +326,7 @@ The classic cell-by-cell emission, on top of the same scan: for each cell in the
 trim, look up `TRIANGLE_TABLE[case]` and place a vertex on each listed edge.
 
 The difference is that it **doesn't weld** — every triangle gets three of its
-own vertices, so the computed normals come out per-face and the surface reads as
+own vertices, all carrying the triangle's face normal, so the surface reads as
 flat panels. For volumetric shapes that's the look you want, and skipping the
 sharing is what makes it the faster of the two. The costs are a vertex buffer
 roughly 6x larger, and no smooth shading available.
@@ -326,8 +336,10 @@ index slot, so each row of cells owns one contiguous span of both buffers with
 no ownership rule needed. Flying edges gets to the same place, but has to be
 explicit about it — see ownership above.
 
-Either way, `Surface::into_mesh` wraps the buffers into a Bevy `Mesh`
-(`TriangleList`, `MAIN_WORLD | RENDER_WORLD`, computed normals).
+Either way, `Surface` carries positions, normals and indices, and
+`Surface::into_mesh` moves them into a Bevy `Mesh` (`TriangleList`,
+`MAIN_WORLD | RENDER_WORLD`) as they are. Nothing is recomputed: Bevy's
+`with_computed_normals` isn't called.
 
 ### The buffer pool (`scratch.rs`)
 
@@ -336,8 +348,8 @@ either from the chunk size or from counts the passes produce — so allocating
 them per run means asking the allocator for near-identical memory thousands of
 times.
 
-`ExtractionScratch` owns all of it instead: the row bitmasks, `RowMetadata`,
-`RowOffsets`, and the output positions and indices.
+`ExtractionScratch` owns all of it instead: the row bitmasks, `RowMetadata`
+and `RowOffsets`.
 Nothing in it is ever freed while the pool lives. Each run resets the buffers
 with `clear` + `resize`, which keeps the allocation and only grows it when a
 chunk needs more room than any chunk before it, so after the first few
@@ -345,9 +357,15 @@ extractions the allocator is out of the loop entirely. `IsosurfacePlugin` keeps
 one as a resource for the life of the app; driving the extractors yourself means
 holding the pool yourself and calling `extract_with`.
 
-The one copy the pool can't avoid is the finished `Surface`: it outlives the
-extraction and ends up owned by a `Mesh`, while the pool's buffers stay behind
-to be reused.
+The output isn't pooled. A `Surface` outlives its extraction and ends up owned
+by a `Mesh`, so its memory has to be new every time anyway. Pooling it only
+added a zero-fill before emission and a full copy after. Emission writes
+straight into the `Vec`s the `Surface` will own, allocated at exactly the size
+the scan counted, and they move into the result without a copy (`output.rs`).
+They are left uninitialized until written, because every slot is written
+exactly once. `Output::finish` is the one `unsafe` step. Debug builds pre-fill
+a sentinel and panic if any slot survives unwritten, so `cargo test` checks the
+invariant the release build relies on.
 
 ### Performance
 
@@ -357,33 +375,82 @@ cargo run --release --example isosurface_bench
 
 Each field is run four ways: both methods, each with a fresh pool per extraction
 ("cold", what allocating per chunk costs) and with one reused ("pooled", what
-the subsystem does). Mean ms per extraction, one machine, release build:
+the subsystem does). A separate column times `Surface::into_mesh` on the result,
+including dropping the mesh. The benchmark uses the same allocator as the app,
+mimalloc. Mean ms per extraction, one machine (i5-13500H, pinned to one
+performance core), release build:
 
 | field | FE cold | FE pooled | MC cold | MC pooled |
 |---|---|---|---|---|
-| sphere 64³ | 2.43 | **2.21** | 2.04 | **1.58** |
-| sphere 32³ | 0.29 | **0.29** | 0.23 | **0.22** |
-| noise 32³ | 1.71 | **1.03** | 3.40 | **1.47** |
-| slab 32³ | 0.16 | **0.16** | 0.12 | **0.12** |
-| cube 16³ | 0.047 | **0.047** | 0.048 | **0.047** |
+| sphere 64³ | 2.68 | **2.67** | 1.74 | **1.73** |
+| sphere 32³ | 0.37 | **0.37** | 0.28 | **0.28** |
+| noise 32³ | 1.71 | **1.68** | 2.30 | **2.25** |
+| slab 32³ | 0.20 | **0.20** | 0.14 | **0.14** |
+| cube 16³ | 0.071 | **0.070** | 0.062 | **0.062** |
+
+`into_mesh` is 0.001–0.002ms on every field.
 
 Reading it:
 
+- **These times include the normals and the output allocation.** Until the
+  extractors wrote normals themselves, Bevy computed them in `into_mesh`, which
+  then took 0.28ms (FE) and 0.53ms (MC) on the 64³ sphere, and 1.2ms and 2.7ms
+  on dense noise. So compare extraction + `into_mesh`, which is what a mesh
+  really costs. Pooled, original code (Bevy's normals, glibc) → own normals on
+  glibc → own normals on mimalloc:
+
+  | field | FE | MC |
+  |---|---|---|
+  | sphere 64³ | 2.49 → 2.73 → 2.67 | 2.09 → 2.13 → 1.73 |
+  | sphere 32³ | 0.33 → 0.37 → 0.37 | 0.29 → 0.28 → 0.28 |
+  | noise 32³ | 2.24 → 2.16 → 1.68 | 4.41 → 4.27 → 2.25 |
+  | slab 32³ | 0.18 → 0.19 → 0.20 | 0.14 → 0.14 → 0.14 |
+  | cube 16³ | 0.061 → 0.070 → 0.070 | 0.072 → 0.062 → 0.062 |
+
+- **Marching cubes is now up to twice as fast as the original** on big outputs,
+  and never slower. Its face normal is one cross product per triangle, while
+  Bevy's `compute_smooth_normals` made about five passes over the mesh: a
+  zero-filled buffer, a `Vec<usize>` copy of every index, a scatter-add per
+  corner, a normalize per vertex, and a format conversion.
+- **Flying edges is faster on dense noise but ~7–10% slower on sparse fields.**
+  That's the gradient, about 17–20ns per vertex: two central differences (12
+  sample reads, with boundary tests), a blend, and a normalize. The cost per
+  vertex is the same from 16³ to 64³, so it's arithmetic, not cache misses. On
+  sparse fields it costs more than Bevy's face averaging did. Caching each
+  sample's gradient (reused by ~1.8 vertices on curved surfaces) and skipping
+  boundary tests for interior cells are the obvious ways to cut it.
+- **Why the allocator matters.** The output is new memory for every mesh. glibc
+  hands out large blocks as fresh pages from the OS, and the first write to each
+  4KB page traps into the kernel, which zeroes it first. Freeing returns the block
+  to the OS right away (`munmap`), which is most of what the old `into_mesh`
+  column measured, since it includes dropping the mesh. mimalloc keeps freed
+  memory and hands it out again, so a new mesh lands on pages that are already
+  mapped. Small outputs don't change, because glibc was already reusing memory
+  for them.
+
+  This benchmark is the allocator's best case: it frees a mesh and immediately
+  allocates one the same size. In the game, meshes stay alive while their chunks
+  are visible, so memory is reused as old chunk meshes are dropped. With chunk
+  streaming that is constant. While the world is still growing, first-touch
+  faults remain.
+- **Cold and pooled are now the same.** The pool only holds the scan's buffers
+  (masks, row metadata, offsets). The output was always fresh memory, and now
+  it's allocated at exactly the counted size and written once, instead of being
+  zero-filled in the pool and copied out.
 - **Neither method wins everywhere, and the crossover is the vertex count.**
-  Marching cubes is ~1.3–1.4x faster on sparse and structured fields, where
-  emission is cheap and not welding is pure saving. Flying edges is 1.4x faster
+  Marching cubes is ~1.3–1.5x faster on sparse and structured fields, where
+  emission is cheap and not welding is pure saving. Flying edges is 1.3x faster
   on dense noise, where the surface reaches nearly every cell and marching cubes
   pays for 282k vertices against its 45k. Real terrain chunks look far more like
   the sphere than like the noise.
-- **Pooling is worth most where the buffers are biggest**: 2.3x for marching
-  cubes on dense noise, ~1.1–1.7x on the large fields, and nothing at all on
-  small ones, where the allocator was never the bottleneck. It is never
-  negative, which is the point — a floor, not a gamble.
 - Both are much faster than before the scan was shared. The old welding marching
-  cubes took 4.95ms on dense noise, 3.4x its current time. Flying edges took
-  3.45ms on the 64³ sphere and 1.40ms on dense noise, before it stopped
-  gathering corners for uniform cells and started writing only the vertices it
-  owns.
+  cubes took 4.95ms on dense noise, without normals. Flying edges took 3.45ms on
+  the 64³ sphere and 1.40ms on dense noise, also without normals, before it
+  stopped gathering corners for uniform cells and started writing only the
+  vertices it owns.
+- **Code shape matters in the marching-cubes loop.** Writing each triangle's
+  three corners out one by one is 2.3ms faster on dense noise than collecting
+  them in a `[Vec3; 3]` and looping over it. See the comment in `emit`.
 
 So: flying edges for terrain and water, marching cubes for volumetrics — chosen
 for how they shade, and roughly a wash on speed at the sizes that matter.
@@ -470,6 +537,13 @@ Alongside it:
 - **Scan agreement** — skipping the vertex counting must not change the triangle
   counting it shares a loop with.
 - **Winding** — normals must point away from the solid, for both methods.
+- **Normals** — one per vertex, unit length and finite on every field, including
+  noise full of zero-area triangles and a size-2 field that is all boundary.
+  They must point out of the sphere. Flying edges' gradient normals must lean the
+  same way as every face that uses them. A slab's normals must be exactly
+  vertical, which pins the one-sided differences at the buffer's faces. A
+  cancelled gradient must fall back to the edge direction, not NaN. Marching
+  cubes' three normals per triangle must equal its face normal.
 - **Table consistency** — `TRIANGLE_COUNT` matches `TRIANGLE_TABLE`, every edge a
   case uses is marked in `EDGE_INTERSECTION`, and `EDGE_AXIS_ORIGIN` agrees with
   `EDGE_VERTEX_INDICES`.
@@ -533,8 +607,9 @@ What's stubbed or in flight:
 - **Inside test is `<=`, not `<`.** A sample exactly equal to the isolevel counts
   as empty, and interpolates to `t = 0` — which collapses vertices onto grid
   corners and emits zero-area triangles. That's legal marching cubes output, but
-  a vertex whose every neighbouring triangle is degenerate has no normal to
-  compute, so `with_computed_normals` can hand back a zero or NaN normal. Nudge
+  a degenerate triangle has no face normal. Neither method produces NaN for it:
+  marching cubes falls back to the edge direction, and flying edges' gradient
+  only needs the samples. Nudge
   such samples off the isolevel if you generate fields analytically;
   `test_maps::sphere` does.
 - **The methods produce the same triangles but different vertices.** Only flying

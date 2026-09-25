@@ -7,6 +7,7 @@ edition = "2021"
 avian3d = { git = "https://github.com/Jondolf/avian", branch = "main" }
 bevy = { version = "0.16.0", features = ["bevy_dev_tools", "bevy_remote"] }
 bevy_panorbit_camera = "0.26"
+mimalloc = "0.1.52"
 
 [features]
 dev = ["bevy/dynamic_linking"]

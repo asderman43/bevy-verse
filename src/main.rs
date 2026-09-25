@@ -11,6 +11,14 @@ use bevy_verse::voxel_terrain::{
 
 mod prototype;
 
+/// mimalloc instead of the system allocator. It keeps freed memory for reuse
+/// rather than handing large blocks straight back to the OS, so a chunk's new
+/// mesh lands on pages that are already mapped instead of faulting in fresh
+/// ones. Measured on dense noise: marching cubes 4.22ms -> 2.25ms, flying
+/// edges 2.15ms -> 1.68ms per extraction (README, Performance).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     App::new()
         .add_plugins((

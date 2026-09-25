@@ -14,6 +14,10 @@
 
 use std::time::{Duration, Instant};
 
+/// The app's allocator, so the numbers match what the app pays. See `main.rs`.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use bevy_verse::voxel_terrain::isosurface::{
     extract_with, test_maps, ExtractionJob, ExtractionScratch, Method, VoxelBuffer,
 };
@@ -31,6 +35,9 @@ fn runs_for(size: usize) -> usize {
 struct Timing {
     mean: Duration,
     best: Duration,
+    /// Mean time for `Surface::into_mesh` on the result, which is where the
+    /// normals used to be computed.
+    mesh: Duration,
     triangles: usize,
     vertices: usize,
 }
@@ -45,6 +52,7 @@ fn time(job: &ExtractionJob, pooled: bool, runs: usize) -> Timing {
 
     let mut total = Duration::ZERO;
     let mut best = Duration::MAX;
+    let mut mesh = Duration::ZERO;
 
     for _ in 0..runs {
         // A cold run pays for its buffers, including dropping the last set.
@@ -61,11 +69,18 @@ fn time(job: &ExtractionJob, pooled: bool, runs: usize) -> Timing {
 
         total += elapsed;
         best = best.min(elapsed);
+
+        // The copy is not what is being measured, so it happens off the clock.
+        let owned = surface.clone();
+        let start = Instant::now();
+        std::hint::black_box(owned.into_mesh());
+        mesh += start.elapsed();
     }
 
     Timing {
         mean: total / runs as u32,
         best,
+        mesh: mesh / runs as u32,
         triangles: surface.triangle_count(),
         vertices: surface.vertex_count(),
     }
@@ -78,8 +93,8 @@ fn bench(name: &str, field: (Vec<i8>, i8, usize)) {
 
     println!("\n{name}  ({size}^3, {} cells, {runs} runs)", cells(&buffer));
     println!(
-        "  {:<16} {:>10} {:>10} {:>12} {:>10}",
-        "", "mean", "best", "triangles", "vertices",
+        "  {:<22} {:>10} {:>10} {:>10} {:>12} {:>10}",
+        "", "mean", "best", "into_mesh", "triangles", "vertices",
     );
 
     for method in [Method::FlyingEdges, Method::MarchingCubes] {
@@ -95,17 +110,18 @@ fn bench(name: &str, field: (Vec<i8>, i8, usize)) {
 
         for (label, t) in [("cold", &cold), ("pooled", &warm)] {
             println!(
-                "  {:<16} {:>10} {:>10} {:>12} {:>10}",
+                "  {:<22} {:>10} {:>10} {:>10} {:>12} {:>10}",
                 format!("{method:?}/{label}"),
                 format!("{:.3}ms", t.mean.as_secs_f64() * 1000.0),
                 format!("{:.3}ms", t.best.as_secs_f64() * 1000.0),
+                format!("{:.3}ms", t.mesh.as_secs_f64() * 1000.0),
                 t.triangles,
                 t.vertices,
             );
         }
 
         let saved = cold.mean.as_secs_f64() / warm.mean.as_secs_f64();
-        println!("  {:<16} pooling is {saved:.2}x", "");
+        println!("  {:<22} pooling is {saved:.2}x", "");
     }
 }
 

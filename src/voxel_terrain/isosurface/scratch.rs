@@ -6,6 +6,12 @@
 //! means the allocator does the same work thousands of times to hand back
 //! memory of very nearly the same size.
 //!
+//! The one thing that does *not* live here is the output. A surface outlives
+//! the extraction that made it and ends up owned by a `Mesh`, so its memory has
+//! to be new every time whatever happens; pooling it would only add a zero-fill
+//! before emission and a full copy after. Emission writes straight into the
+//! surface's own buffers instead -- see [`super::output`].
+//!
 //! So nothing in here is ever freed while the pool is alive. Every buffer is
 //! reset with `clear` + `resize`, which keeps the allocation and only grows it
 //! when a chunk needs more than any chunk before it -- after a handful of
@@ -35,10 +41,6 @@ pub struct ExtractionScratch {
     pub(crate) rows: Vec<RowMetadata>,
     /// Scan, pass 3: per-row write offsets.
     pub(crate) offsets: Vec<RowOffsets>,
-    /// Output vertices, written by emission into the slots pass 3 reserved.
-    pub(crate) positions: Vec<Vec3>,
-    /// Output indices.
-    pub(crate) indices: Vec<u32>,
 }
 
 impl ExtractionScratch {
@@ -50,9 +52,6 @@ impl ExtractionScratch {
     /// A pool already big enough for the per-row buffers of a `size`-per-axis
     /// chunk, so the first extraction of that size allocates nothing for them.
     ///
-    /// The output buffers are left alone: their size depends on how much
-    /// surface the field actually contains, so they find their own high-water
-    /// mark over the first few runs.
     pub fn with_capacity(size: usize) -> Self {
         let mut scratch = Self::new();
         scratch.reserve(size);
@@ -74,8 +73,6 @@ impl ExtractionScratch {
         self.corner_masks.capacity() * size_of::<u64>()
             + self.rows.capacity() * size_of::<RowMetadata>()
             + self.offsets.capacity() * size_of::<RowOffsets>()
-            + self.positions.capacity() * size_of::<Vec3>()
-            + self.indices.capacity() * size_of::<u32>()
     }
 
     /// Resets the per-row buffers to `size * size` default entries, keeping
@@ -91,37 +88,6 @@ impl ExtractionScratch {
 
         self.offsets.clear();
         self.offsets.resize(rows, RowOffsets::default());
-    }
-
-    /// Resets the output buffers to exactly the sizes pass 3 counted, so pass 4
-    /// can write into them by index.
-    pub(crate) fn reset_output(&mut self, vertices: usize, indices: usize) {
-        self.positions.clear();
-        self.positions.resize(vertices, Vec3::ZERO);
-
-        self.indices.clear();
-        self.indices.resize(indices, 0);
-    }
-
-    /// Empties the output buffers without giving up their capacity, for a
-    /// field too small to hold a cell.
-    pub(crate) fn clear_output(&mut self) {
-        self.positions.clear();
-        self.indices.clear();
-    }
-
-    /// Copies the finished surface out of the pool.
-    ///
-    /// This is the one copy the pool cannot avoid: a [`super::Surface`] outlives
-    /// the extraction that produced it and ends up owned by a [`Mesh`], whereas
-    /// the pool's buffers have to stay behind to be reused. It is two memcpys
-    /// of already-sized, already-contiguous data, against passes that touched
-    /// every cell in the chunk.
-    pub(crate) fn surface(&self) -> super::Surface {
-        super::Surface {
-            positions: self.positions.clone(),
-            indices: self.indices.clone(),
-        }
     }
 }
 
@@ -141,22 +107,19 @@ mod tests {
         let mut scratch = ExtractionScratch::new();
 
         scratch.reset_rows(16);
-        scratch.reset_output(1000, 3000);
         let big = (
             scratch.corner_masks.capacity(),
-            scratch.positions.capacity(),
-            scratch.indices.capacity(),
+            scratch.rows.capacity(),
+            scratch.offsets.capacity(),
         );
 
         // A much smaller chunk afterwards must not hand the memory back.
         scratch.reset_rows(4);
-        scratch.reset_output(1, 3);
 
         assert_eq!(scratch.corner_masks.len(), 16, "row buffer resized");
-        assert_eq!(scratch.positions.len(), 1, "vertex buffer resized");
-        assert!(scratch.corner_masks.capacity() >= big.0, "row capacity lost");
-        assert!(scratch.positions.capacity() >= big.1, "vertex capacity lost");
-        assert!(scratch.indices.capacity() >= big.2, "index capacity lost");
+        assert!(scratch.corner_masks.capacity() >= big.0, "mask capacity lost");
+        assert!(scratch.rows.capacity() >= big.1, "row capacity lost");
+        assert!(scratch.offsets.capacity() >= big.2, "offset capacity lost");
     }
 
     #[test]

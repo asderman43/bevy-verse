@@ -41,15 +41,22 @@
 //!
 //! # Allocation
 //!
-//! Every buffer extraction needs lives in an [`ExtractionScratch`], which the
-//! plugin keeps as a resource for the life of the app. Nothing in it is ever
-//! freed: each run resets the buffers in place and only grows them when a chunk
-//! needs more room than any chunk before it, so after the first few extractions
-//! the allocator is out of the loop. Driving the extractors yourself means
-//! holding that pool yourself -- see [`extract_with`].
+//! Every working buffer extraction needs lives in an [`ExtractionScratch`],
+//! which the plugin keeps as a resource for the life of the app. Nothing in it
+//! is ever freed: each run resets the buffers in place and only grows them when
+//! a chunk needs more room than any chunk before it, so after the first few
+//! extractions the allocator is out of the loop for them. Driving the
+//! extractors yourself means holding that pool yourself -- see
+//! [`extract_with`].
+//!
+//! The output is the exception. A [`Surface`] outlives its extraction, so its
+//! buffers are allocated fresh at exactly the size the scan counted, written
+//! once, uninitialized until then, and moved -- not copied -- into the result.
+//! See [`output`].
 
 use bevy::{
     asset::RenderAssetUsages,
+    math::vec3,
     prelude::*,
     render::mesh::{Indices, PrimitiveTopology},
 };
@@ -58,6 +65,7 @@ pub mod buffer;
 pub mod debug;
 pub mod flying_edges;
 pub mod marching_cubes;
+mod output;
 pub mod scan;
 pub mod scratch;
 pub mod tables;
@@ -82,13 +90,15 @@ pub const MAX_SIZE: usize = 64;
 /// Which algorithm to extract with.
 ///
 /// Both produce the same triangles, in the same places, for the same input.
-/// What differs is whether the vertices along those triangles are shared --
-/// which decides how the surface is shaded, and how much each one costs.
+/// What differs is whether the vertices along those triangles are shared, and
+/// so which normals they can carry -- which decides how the surface is shaded,
+/// and how much each one costs.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Method {
     /// **Welded, smooth.** One vertex per cut edge, shared by every cell that
-    /// touches it, so computed normals average across faces and the surface
-    /// reads as a continuous skin. For terrain, water, anything organic.
+    /// touches it, each carrying the density gradient at that point as its
+    /// normal, so the surface reads as a continuous skin. For terrain, water,
+    /// anything organic.
     ///
     /// Four passes: the shared [`scan`], then an emission that walks the rows
     /// again and resolves each shared edge to the same vertex ID from either
@@ -98,9 +108,9 @@ pub enum Method {
     /// Isocontouring Algorithm* (2015).
     #[default]
     FlyingEdges,
-    /// **Unwelded, hard-faced.** Three fresh vertices per triangle, so computed
-    /// normals come out per-face and the surface reads as flat panels. For
-    /// volumetric shapes, where that is the look you want anyway.
+    /// **Unwelded, hard-faced.** Three fresh vertices per triangle, all three
+    /// carrying the triangle's own face normal, so the surface reads as flat
+    /// panels. For volumetric shapes, where that is the look you want anyway.
     ///
     /// Same [`scan`] to size the buffers and trim empty space, then plain
     /// cell-by-cell emission. Not sharing vertices is what makes it the faster
@@ -199,9 +209,14 @@ impl IsosurfaceResults {
 /// the methods' one visible difference: flying edges welds, so `positions` holds
 /// one vertex per cut edge; marching cubes does not, so it holds three per
 /// triangle and `indices` is the identity.
+///
+/// `normals` runs parallel to `positions`, and every entry is finite and unit
+/// length. Flying edges writes the density gradient, marching cubes the face
+/// normal of the vertex's one triangle.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Surface {
     pub positions: Vec<Vec3>,
+    pub normals: Vec<Vec3>,
     pub indices: Vec<u32>,
 }
 
@@ -218,19 +233,19 @@ impl Surface {
         self.positions.len()
     }
 
-    /// Builds a renderable mesh with computed normals.
+    /// Builds a renderable mesh from the surface as it is.
     ///
-    /// The normals follow from the vertices: averaged across the faces meeting
-    /// at each one, which for a welded surface is smooth shading and for an
-    /// unwelded one -- where no vertex is shared -- is flat. See [`Method`].
+    /// The extractors already wrote the normals, so nothing is recomputed
+    /// here: the buffers move straight into the mesh. See [`Method`] for what
+    /// each one's normals are.
     pub fn into_mesh(self) -> Mesh {
         Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::MAIN_WORLD | RenderAssetUsages::RENDER_WORLD,
         )
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, self.positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, self.normals)
         .with_inserted_indices(Indices::U32(self.indices))
-        .with_computed_normals()
     }
 }
 
@@ -270,8 +285,8 @@ pub(crate) fn case_index(corners: &[i8; 8], isolevel: i8) -> usize {
 
 /// Positions a vertex on one edge of the cell whose lowest corner is `cell`.
 ///
-/// Both methods route through here, so they cannot disagree about where a
-/// vertex belongs.
+/// Both methods route through here (or through [`edge_t`] and [`place_at`],
+/// which it is made of), so they cannot disagree about where a vertex belongs.
 pub(crate) fn place_vertex(
     cell: Vec3,
     edge: usize,
@@ -279,19 +294,108 @@ pub(crate) fn place_vertex(
     isolevel: i8,
     interpolate: Interpolate,
 ) -> Vec3 {
+    place_at(cell, edge, edge_t(edge, corners, isolevel, interpolate))
+}
+
+/// How far along `edge` the surface crosses it: 0 at the edge's first corner
+/// in [`EDGE_VERTEX_INDICES`], 1 at its second.
+///
+/// Split out of [`place_vertex`] because the gradient normal is blended along
+/// the edge by the same amount, and working it out twice is a second divide.
+pub(crate) fn edge_t(edge: usize, corners: &[i8; 8], isolevel: i8, interpolate: Interpolate) -> f32 {
+    if !interpolate {
+        return 0.5;
+    }
+
+    let (a, b) = EDGE_VERTEX_INDICES[edge];
+    let (from, to) = (corners[a] as f32, corners[b] as f32);
+    // Only ever called for an edge the surface crosses, so the corner values
+    // straddle the isolevel and `to - from` cannot be zero.
+    (isolevel as f32 - from) / (to - from)
+}
+
+/// The point `t` of the way along `edge` of the cell whose lowest corner is
+/// `cell`.
+///
+/// Every component of `end - start` is -1, 0 or 1, so `t * (end - start)` is
+/// exact, and this lands on bit for bit the same point the longhand
+/// `start + (isolevel - from) * (end - start) / (to - from)` does.
+pub(crate) fn place_at(cell: Vec3, edge: usize, t: f32) -> Vec3 {
     let (a, b) = EDGE_VERTEX_INDICES[edge];
     let (start, end) = (VERTEX_POSITIONS[a], VERTEX_POSITIONS[b]);
+    cell + (start + t * (end - start))
+}
 
-    let local = if interpolate {
-        let (from, to) = (corners[a] as f32, corners[b] as f32);
-        // Only ever called for an edge the surface crosses, so the corner
-        // values straddle the isolevel and `to - from` cannot be zero.
-        start + (isolevel as f32 - from) * (end - start) / (to - from)
-    } else {
-        (start + end) / 2.0
+/// The smooth normal of the vertex `t` of the way along `edge`, in the cell
+/// whose lowest corner is `(x, y, z)`: the density gradient, blended between
+/// the edge's two corners.
+///
+/// Density rises into the solid, so the gradient points inward and the normal
+/// is its negation. Where the two corners' gradients cancel -- only possible
+/// on a tie, a sample sitting exactly on the isolevel -- it falls back to
+/// [`edge_fallback`].
+pub(crate) fn gradient_normal(
+    buffer: &VoxelBuffer,
+    (x, y, z): (usize, usize, usize),
+    edge: usize,
+    corners: &[i8; 8],
+    isolevel: i8,
+    t: f32,
+) -> Vec3 {
+    let (a, b) = EDGE_VERTEX_INDICES[edge];
+    let at_corner = |i: usize| sample_gradient(buffer, x + (i & 1), y + (i >> 1 & 1), z + (i >> 2 & 1));
+
+    let gradient = at_corner(a).lerp(at_corner(b), t);
+    (-gradient)
+        .try_normalize()
+        .unwrap_or_else(|| edge_fallback(edge, corners, isolevel))
+}
+
+/// The density gradient at a sample: central differences inside the buffer,
+/// one-sided on its faces, where the sample beyond is not there to read.
+///
+/// Works on the flat sample index directly -- one index computation, then the
+/// six neighbours are a stride away each -- because this runs twice per
+/// welded vertex and `VoxelBuffer::get` would redo the full index six times.
+fn sample_gradient(buffer: &VoxelBuffer, x: usize, y: usize, z: usize) -> Vec3 {
+    let size = buffer.size();
+    let samples = buffer.samples();
+    let i = buffer.index(x, y, z);
+
+    // Difference along one axis, where `c` is the sample's coordinate on it
+    // and `stride` the index distance to the next sample along it. Scaled by
+    // the reciprocal of the distance the difference spans: 1/2 across a
+    // central difference, 1 across a one-sided one.
+    let along = |c: usize, stride: usize| {
+        let has_lo = c > 0;
+        let has_hi = c + 1 < size;
+        let lo = if has_lo { i - stride } else { i };
+        let hi = if has_hi { i + stride } else { i };
+        let scale = if has_lo && has_hi { 0.5 } else { 1.0 };
+        (samples[hi] as f32 - samples[lo] as f32) * scale
     };
 
-    cell + local
+    vec3(along(x, 1), along(y, size), along(z, size * size))
+}
+
+/// A normal for a vertex with no better one: the direction along its edge from
+/// the solid end to the empty end. Axis-aligned, so already unit length, and
+/// always out of the solid.
+pub(crate) fn edge_fallback(edge: usize, corners: &[i8; 8], isolevel: i8) -> Vec3 {
+    let (a, b) = EDGE_VERTEX_INDICES[edge];
+    let along = VERTEX_POSITIONS[b] - VERTEX_POSITIONS[a];
+    if corners[a] > isolevel {
+        along
+    } else {
+        -along
+    }
+}
+
+/// The unit normal of a triangle, wound the way the triangle table winds it
+/// and the way Bevy's own `compute_normals` reads it. `None` for a zero-area
+/// triangle, which has no direction to give.
+pub(crate) fn face_normal(a: Vec3, b: Vec3, c: Vec3) -> Option<Vec3> {
+    (b - a).cross(c - a).try_normalize()
 }
 
 /// The extraction step, so consumers can order their collection system after

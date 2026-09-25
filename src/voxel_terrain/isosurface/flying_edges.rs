@@ -79,10 +79,14 @@
 //! gated. And the index buffer was never the problem: `index_cursor` starts at
 //! the row's own offset and never leaves its span.
 
+use std::mem::MaybeUninit;
+
 use bevy::{math::vec3, prelude::*};
 
 use super::{
-    place_vertex,
+    edge_t, gradient_normal,
+    output::Output,
+    place_at,
     scan::{bit, bounding_rows, combined_trim, RowOffsets, RowScan},
     scratch::ExtractionScratch,
     tables::{EDGE_INTERSECTION, ORDER, TRIANGLE_COUNT, TRIANGLE_TABLE},
@@ -103,26 +107,29 @@ pub fn extract_into(
     let scan = RowScan::new(buffer, isolevel);
 
     if buffer.size() < 2 {
-        scratch.clear_output();
         return Surface::default();
     }
 
     let counts = scan.count(scratch);
-    scratch.reset_output(counts.vertices, counts.indices);
+    let mut output = Output::new(counts.vertices, counts.indices);
 
-    {
-        let ExtractionScratch {
-            corner_masks,
-            offsets,
-            positions,
-            indices,
-            ..
-        } = &mut *scratch;
+    let slots = output.slots();
+    emit(
+        &scan,
+        interpolate,
+        &scratch.corner_masks,
+        &scratch.offsets,
+        slots.positions,
+        slots.normals,
+        slots.indices,
+    );
 
-        emit(&scan, interpolate, corner_masks, offsets, positions, indices);
-    }
-
-    scratch.surface()
+    // SAFETY: `output` is sized to the scan's counts, and emission writes
+    // every one of those slots: each vertex by its owner, each index by the
+    // cell row whose span it is in. See the module docs on ownership, and
+    // `ownership_partitions_the_vertices_exactly` /
+    // `emission_leaves_no_slot_unwritten` below.
+    unsafe { output.finish() }
 }
 
 /// Extracts with a throwaway pool. Convenient for one-off calls and tests;
@@ -193,19 +200,27 @@ const fn owned_slots(last_x: bool, last_y: bool, last_z: bool) -> u16 {
     owned
 }
 
-/// Pass 4: write the vertices and indices to the slots the scan reserved.
+/// Pass 4: write the vertices, their normals and the indices to the slots the
+/// scan reserved.
 ///
 /// The buffers must be sized to [`Counts`] from a [`RowScan::count`] over the
 /// same field and isolevel; every slot in them is written exactly once. See
 /// the module docs on ownership for why "exactly once" rather than "at least
 /// once".
+///
+/// A vertex's normal is the density gradient where it sits, written by the
+/// same owner at the same moment as its position. The gradient reads the
+/// samples around the edge's two corners straight from the buffer, so it needs
+/// nothing from any other cell -- which is why ownership carries over to it
+/// unchanged.
 fn emit(
     scan: &RowScan,
     interpolate: Interpolate,
     corner_masks: &[u64],
     offsets: &[RowOffsets],
-    positions: &mut [Vec3],
-    indices: &mut [u32],
+    positions: &mut [MaybeUninit<Vec3>],
+    normals: &mut [MaybeUninit<Vec3>],
+    indices: &mut [MaybeUninit<u32>],
 ) {
     let buffer = scan.buffer();
     let size = buffer.size();
@@ -276,13 +291,19 @@ fn emit(
                         let slot = pending.trailing_zeros() as usize;
                         pending &= pending - 1;
 
-                        positions[ids[slot] as usize] = place_vertex(
-                            cell,
-                            SLOT_EDGE[slot],
+                        let id = ids[slot] as usize;
+                        let edge = SLOT_EDGE[slot];
+                        let t = edge_t(edge, &corners, scan.isolevel(), interpolate);
+
+                        positions[id].write(place_at(cell, edge, t));
+                        normals[id].write(gradient_normal(
+                            buffer,
+                            (x, y, z),
+                            edge,
                             &corners,
                             scan.isolevel(),
-                            interpolate,
-                        );
+                            t,
+                        ));
                     }
                 }
 
@@ -293,7 +314,7 @@ fn emit(
                         if edge == -1 {
                             break;
                         }
-                        indices[index_cursor + corner] = ids[ORDER[edge as usize]];
+                        indices[index_cursor + corner].write(ids[ORDER[edge as usize]]);
                     }
 
                     index_cursor += TRIANGLE_COUNT[case] as usize * 3;
@@ -390,36 +411,40 @@ mod tests {
     }
 
     /// And through emission: every reserved slot must actually get written.
+    /// The output is allocated uninitialized, so this is what makes
+    /// `Output::finish` sound.
     ///
-    /// The pool hands back zeroed positions and the origin is a legitimate
-    /// vertex position, so zero is no sentinel -- this pre-fills with NaN
-    /// instead, which nothing downstream can produce.
+    /// Debug builds pre-fill the output with a sentinel (NaN, `u32::MAX`) that
+    /// nothing downstream can produce, which is what this counts. Zero would be
+    /// no sentinel: the origin is a legitimate vertex position.
+    #[cfg(debug_assertions)]
     #[test]
     fn emission_leaves_no_slot_unwritten() {
-        for field in [test_maps::sphere(16, 5.0), test_maps::terrain()] {
+        for field in [
+            test_maps::sphere(16, 5.0),
+            test_maps::terrain(),
+            test_maps::pseudo_random(12, 0xC0FFEE),
+            test_maps::flat_slab(6),
+        ] {
             let (buffer, isolevel) = test_maps::buffer(field);
             let scan = RowScan::new(&buffer, isolevel);
 
             let mut scratch = ExtractionScratch::new();
             let counts = scan.count(&mut scratch);
 
-            let mut positions = vec![Vec3::NAN; counts.vertices];
-            let mut indices = vec![u32::MAX; counts.indices];
+            let mut output = Output::new(counts.vertices, counts.indices);
+            let slots = output.slots();
             emit(
                 &scan,
                 true,
                 &scratch.corner_masks,
                 &scratch.offsets,
-                &mut positions,
-                &mut indices,
+                slots.positions,
+                slots.normals,
+                slots.indices,
             );
 
-            let unwritten = positions.iter().filter(|v| v.is_nan()).count();
-            assert_eq!(unwritten, 0, "{unwritten} vertex slots were never written");
-            assert!(
-                indices.iter().all(|&i| i != u32::MAX),
-                "some index slot was never written",
-            );
+            assert_eq!(output.unwritten(), (0, 0, 0), "(positions, normals, indices) never written");
         }
     }
 }

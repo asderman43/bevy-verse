@@ -375,6 +375,211 @@ fn winding_faces_away_from_the_solid() {
     }
 }
 
+/// A test map as `test_maps` hands them out: samples, isolevel, size.
+type Field = (Vec<i8>, i8, usize);
+
+/// Every field the normal tests run over: tidy ones, dense noise full of
+/// degenerate triangles, and a size-2 field that is all boundary.
+fn normal_fields() -> Vec<(&'static str, Field)> {
+    vec![
+        ("sphere", test_maps::sphere(24, 8.0)),
+        ("terrain", test_maps::terrain()),
+        ("solid_cube", test_maps::solid_cube(8)),
+        ("single_voxel", test_maps::single_voxel()),
+        ("scattered", test_maps::scattered()),
+        ("flat_slab", test_maps::flat_slab(6)),
+        ("pseudo_random", test_maps::pseudo_random(12, 0xC0FFEE)),
+        ("size_2", (vec![0, 5, 0, 0, 5, 5, 0, 5], 2, 2)),
+        ("gradient_tie", gradient_tie()),
+    ]
+}
+
+/// A field where the density gradient cancels at a vertex: two solid samples
+/// either side of one sitting exactly on the isolevel, so both edges into it
+/// put a vertex on that sample, where the gradient is zero.
+fn gradient_tie() -> Field {
+    let size = 5;
+    let mut map = vec![0i8; size * size * size];
+    let at = |x: usize, y: usize, z: usize| x + y * size + z * size * size;
+    map[at(1, 2, 2)] = 5;
+    map[at(3, 2, 2)] = 5;
+    map[at(2, 2, 2)] = 2;
+    (map, 2, size)
+}
+
+#[test]
+fn normals_are_unit_and_finite() {
+    for (name, field) in normal_fields() {
+        let (buffer, isolevel) = test_maps::buffer(field);
+
+        for interpolate in [true, false] {
+            for method in [Method::FlyingEdges, Method::MarchingCubes] {
+                let label = format!("{name} / {method:?} / interpolate={interpolate}");
+                let surface = extract(&ExtractionJob {
+                    buffer: buffer.clone(),
+                    isolevel,
+                    method,
+                    interpolate,
+                });
+
+                assert_eq!(
+                    surface.normals.len(),
+                    surface.positions.len(),
+                    "{label}: one normal per vertex",
+                );
+                for (i, n) in surface.normals.iter().enumerate() {
+                    assert!(
+                        n.is_finite() && (n.length() - 1.0).abs() < 1e-4,
+                        "{label}: normal {i} is {n}",
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn vertex_normals_point_away_from_the_solid() {
+    let size = 24;
+    let (buffer, isolevel) = test_maps::buffer(test_maps::sphere(size, 8.0));
+    let centre = Vec3::splat((size as f32 - 1.0) / 2.0);
+
+    for method in [Method::FlyingEdges, Method::MarchingCubes] {
+        let surface = extract(&ExtractionJob {
+            buffer: buffer.clone(),
+            isolevel,
+            method,
+            interpolate: true,
+        });
+
+        let inward = surface
+            .positions
+            .iter()
+            .zip(&surface.normals)
+            .filter(|(p, n)| n.dot(**p - centre) <= 0.0)
+            .count();
+        assert!(!surface.normals.is_empty(), "{method:?} produced nothing");
+        assert_eq!(inward, 0, "{method:?}: {inward} normals point into the ball");
+    }
+}
+
+/// The gradient is the smooth normal of the same surface the triangles
+/// approximate, so at every corner it has to lean the same way as the face.
+/// A sign error or a swapped corner would flip or scramble it.
+#[test]
+fn gradient_normals_agree_with_their_faces() {
+    for (name, field) in [
+        ("sphere(16)", test_maps::sphere(16, 5.0)),
+        ("sphere(24)", test_maps::sphere(24, 8.0)),
+        ("sphere(MAX_SIZE)", test_maps::sphere(MAX_SIZE, 24.0)),
+        ("solid_cube", test_maps::solid_cube(8)),
+        ("flat_slab", test_maps::flat_slab(6)),
+    ] {
+        let (buffer, isolevel) = test_maps::buffer(field);
+        let surface = flying_edges::extract(&buffer, isolevel, true);
+
+        let mut disagreeing = 0;
+        for t in surface.indices.chunks(3) {
+            let [a, b, c] = [0, 1, 2].map(|k| surface.positions[t[k] as usize]);
+            let Some(face) = super::face_normal(a, b, c) else {
+                continue;
+            };
+            disagreeing += t
+                .iter()
+                .filter(|&&i| face.dot(surface.normals[i as usize]) <= 0.0)
+                .count();
+        }
+        assert_eq!(disagreeing, 0, "{name}: {disagreeing} corners face against their triangle");
+    }
+}
+
+/// On the buffer's faces the gradient has no sample beyond to read, and has
+/// to fall back to a one-sided difference rather than read out of bounds or
+/// lean sideways. A slab spans the whole buffer, so every vertex it has sits
+/// on a column that reaches those faces -- and its normal is exactly up.
+#[test]
+fn a_slab_has_exactly_vertical_normals() {
+    let (buffer, isolevel) = test_maps::buffer(test_maps::flat_slab(6));
+    let surface = flying_edges::extract(&buffer, isolevel, true);
+
+    assert!(!surface.normals.is_empty());
+    for n in &surface.normals {
+        assert_eq!(*n, Vec3::Y);
+    }
+}
+
+/// Where the gradient cancels, the normal falls back to the edge direction,
+/// from the solid end to the empty end -- never to NaN.
+#[test]
+fn a_cancelled_gradient_falls_back_to_the_edge() {
+    let (buffer, isolevel) = test_maps::buffer(gradient_tie());
+    let surface = flying_edges::extract(&buffer, isolevel, true);
+
+    let mut at_tie: Vec<Vec3> = surface
+        .positions
+        .iter()
+        .zip(&surface.normals)
+        .filter(|(p, _)| **p == Vec3::splat(2.0))
+        .map(|(_, n)| *n)
+        .collect();
+    at_tie.sort_by(|a, b| a.x.total_cmp(&b.x));
+
+    // One vertex from the solid sample on each side.
+    assert_eq!(at_tie, vec![-Vec3::X, Vec3::X]);
+}
+
+/// Marching cubes' three vertices per triangle all carry that triangle's own
+/// face normal, which is exactly what makes it read as flat panels.
+#[test]
+fn marching_cubes_normals_are_face_normals() {
+    for (name, field) in normal_fields() {
+        let (buffer, isolevel) = test_maps::buffer(field);
+        let surface = marching_cubes::extract(&buffer, isolevel, true);
+
+        for (i, t) in surface.indices.chunks(3).enumerate() {
+            let [a, b, c] = [0, 1, 2].map(|k| surface.positions[t[k] as usize]);
+            let [na, nb, nc] = [0, 1, 2].map(|k| surface.normals[t[k] as usize]);
+
+            assert!(na == nb && nb == nc, "{name}: triangle {i} has mixed normals");
+            if let Some(face) = super::face_normal(a, b, c) {
+                assert_eq!(na, face, "{name}: triangle {i} normal is not its face's");
+            }
+        }
+    }
+}
+
+/// `place_vertex` is split into `edge_t` and `place_at` so flying edges can
+/// reuse `t` for the gradient; the split must not move a single vertex.
+#[test]
+fn place_at_lands_where_the_longhand_formula_does() {
+    let (buffer, isolevel) = test_maps::buffer(test_maps::pseudo_random(8, 0xABCD));
+    let cells = buffer.cells_per_axis();
+
+    for z in 0..cells {
+        for y in 0..cells {
+            for x in 0..cells {
+                let corners = buffer.cell_corners(x, y, z);
+                let cell = vec3(x as f32, y as f32, z as f32);
+
+                for (edge, &(a, b)) in EDGE_VERTEX_INDICES.iter().enumerate() {
+                    if (corners[a] <= isolevel) == (corners[b] <= isolevel) {
+                        continue;
+                    }
+                    let (start, end) = (VERTEX_POSITIONS[a], VERTEX_POSITIONS[b]);
+                    let (from, to) = (corners[a] as f32, corners[b] as f32);
+                    let longhand = cell + (start + (isolevel as f32 - from) * (end - start) / (to - from));
+
+                    assert_eq!(place_vertex(cell, edge, &corners, isolevel, true), longhand);
+                    assert_eq!(
+                        place_vertex(cell, edge, &corners, isolevel, false),
+                        cell + (start + end) / 2.0,
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn triangle_count_matches_the_triangle_table() {
     for (case, edges) in TRIANGLE_TABLE.iter().enumerate() {
