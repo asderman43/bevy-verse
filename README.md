@@ -544,8 +544,8 @@ Alongside it:
   vertical, which pins the one-sided differences at the buffer's faces. A
   cancelled gradient must fall back to the edge direction, not NaN. Marching
   cubes' three normals per triangle must equal its face normal.
-- **Table consistency** — `TRIANGLE_COUNT` matches `TRIANGLE_TABLE`, every edge a
-  case uses is marked in `EDGE_INTERSECTION`, and `EDGE_AXIS_ORIGIN` agrees with
+- **Table consistency** — `TRIANGLE_COUNT` matches `TRIANGLE_TABLE`,
+  `EDGE_INTERSECTION` marks exactly the edges each case's corners cut, and `EDGE_AXIS_ORIGIN` agrees with
   `EDGE_VERTEX_INDICES`.
 - **Degenerate inputs** — empty fields, buffers too small to hold one cell, and
   a chunk at the 64-sample row-bitmask limit (plus one over it, which must be

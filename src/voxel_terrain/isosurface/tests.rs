@@ -594,18 +594,26 @@ fn triangle_count_matches_the_triangle_table() {
 }
 
 #[test]
-fn every_edge_in_the_triangle_table_is_cut_by_its_case() {
+fn edge_intersection_marks_exactly_the_cut_edges() {
     // EDGE_INTERSECTION drives every vertex count and ID step in flying edges,
-    // so it has to mark exactly the edges the case actually uses.
-    for (case, edges) in TRIANGLE_TABLE.iter().enumerate() {
-        let cut = super::tables::EDGE_INTERSECTION[case];
-        for &edge in edges.iter().take_while(|&&e| e != -1) {
-            let bit = super::tables::ORDER[edge as usize];
-            assert!(
-                cut >> bit & 1 == 1,
-                "case {case} uses edge {edge} but EDGE_INTERSECTION does not mark bit {bit}",
-            );
+    // and is built from the edges TRIANGLE_TABLE lists. An edge is cut exactly
+    // when its two corners fall on opposite sides of the isolevel, so check it
+    // against that, worked out from the corner bits alone: an extra bit means a
+    // case uses an edge the surface does not cross, a missing one means a case
+    // leaves a crossed edge out of its triangles.
+    for case in 0..256usize {
+        let mut expected = 0u16;
+        for (edge, &(a, b)) in EDGE_VERTEX_INDICES.iter().enumerate() {
+            if (case >> a & 1) != (case >> b & 1) {
+                expected |= 1 << super::tables::ORDER[edge];
+            }
         }
+
+        let actual = super::tables::EDGE_INTERSECTION[case];
+        assert_eq!(
+            actual, expected,
+            "case {case}: EDGE_INTERSECTION is {actual:#014b}, the corners cut {expected:#014b} (slot order)",
+        );
     }
 }
 
