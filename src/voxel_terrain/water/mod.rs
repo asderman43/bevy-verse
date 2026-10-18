@@ -7,6 +7,8 @@
 //!
 //! [`VoxelBuffer`]: crate::voxel_terrain::isosurface::VoxelBuffer
 
+use crate::voxel_terrain::isosurface::{ISO, S_MAX};
+
 pub mod mesher;
 pub mod presets;
 pub mod tables;
@@ -16,15 +18,19 @@ mod tests;
 
 pub use mesher::extract;
 
-/// The largest water value: a non-solid sample holds `0..=W_MAX`, and one unit
-/// raises a settled surface by `1 / W_MAX` of a cell. The same scale as the
-/// terrain's [`S_MAX`](crate::voxel_terrain::isosurface::S_MAX).
-pub const W_MAX: u8 = 15;
+/// The largest water value. Rock and water share each sample's slab, so
+/// `s + w <= W_MAX`, and one unit raises a settled surface by `1 / W_MAX` of a
+/// cell.
+///
+/// Rock and water are measured in the same units -- the water rests on the
+/// terrain by adding to the same fill -- so this must equal the terrain's
+/// [`S_MAX`].
+pub const W_MAX: u8 = S_MAX;
 
-/// The water isolevel: a non-solid sample counts as inside the water when
-/// `w > W_ISO`. Sets where a column's water starts, `(W_ISO + 1) / W_MAX` of a
-/// cell below the sample (§1.3).
-pub const W_ISO: u8 = 7;
+/// The water isolevel: a corner is inside the water when its bottom fill is
+/// `> W_ISO`. Equal to the terrain's [`ISO`] for the same reason as
+/// [`W_MAX`].
+pub const W_ISO: u8 = ISO;
 
 /// Water below this many units is treated as none at all, so films thinner
 /// than `W_EPS / W_MAX` of a cell aren't drawn. At this scale one unit is

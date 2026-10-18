@@ -145,16 +145,17 @@ pub const fn face_bits(cell_mask: u8, f: usize) -> usize {
     bits
 }
 
-/// Water height up a vertical edge from its lower corner, indexed by
-/// `o_lo + o_hi` (or `w_lo + w_hi` under a ledge): `(n − W_ISO − 1) / W_MAX`.
+/// Water height up a vertical edge from its lower corner, indexed by the two
+/// corners' bottom fill `b_lo + b_hi` (§3.2): `(n − 7.5) / W_MAX`, the same
+/// volume formula the terrain uses on vertical edges.
 ///
-/// Entries below `W_ISO + 1` are negative and never read; the top entries
-/// exceed 1 and are only read by the ledge rule, which drops them.
+/// Entries below 8 are negative and never read; the top entries exceed 1 and
+/// are only read by the ledge rule, which drops them.
 pub const VERT_T: [f32; 2 * W_MAX as usize + 1] = {
     let mut table = [0.0; 2 * W_MAX as usize + 1];
     let mut n = 0;
     while n < table.len() {
-        table[n] = (n as f32 - (W_ISO as f32 + 1.0)) / W_MAX as f32;
+        table[n] = (n as f32 - (W_ISO as f32 + 0.5)) / W_MAX as f32;
         n += 1;
     }
     table
@@ -337,11 +338,12 @@ mod tests {
 
     #[test]
     fn vert_t_covers_the_surface_range() {
-        // Lower corner inside, upper outside: the height lies in [0, 1).
+        // Lower corner inside, upper outside: the height lies strictly inside
+        // the edge.
         for lo in W_ISO + 1..=W_MAX {
             for hi in 0..=W_ISO {
                 let t = VERT_T[(lo + hi) as usize];
-                assert!((0.0..1.0).contains(&t), "o_lo {lo}, o_hi {hi}: t = {t}");
+                assert!(t > 0.0 && t < 1.0, "b_lo {lo}, b_hi {hi}: t = {t}");
             }
         }
         // One unit is one step, exactly.

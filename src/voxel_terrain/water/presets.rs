@@ -35,8 +35,9 @@ pub fn all() -> Vec<Preset> {
     presets
 }
 
-/// Surface case `q`: the slots in `q` hold a pool at 0.6 on solid ground, and
-/// the others are solid bank columns, so every shoreline lands on the bank.
+/// Surface case `q`: the slots in `q` hold a pool at 9.5/15 ≈ 0.63 on solid
+/// ground, and the others are solid bank columns, so every shoreline lands on
+/// the bank.
 pub fn surface_case(q: usize) -> Preset {
     let mut s = [15; 8];
     let mut w = [0; 8];
@@ -53,7 +54,7 @@ pub fn surface_case(q: usize) -> Preset {
         2 if q == 0b0101 || q == 0b1010 => "diagonal: two separate corner triangles, no bridge",
         2 => "quad: two V, two shoreline points",
         3 => "pentagon: three V, two shoreline points",
-        _ => "open water: one flat quad at 0.6",
+        _ => "open water: one flat quad at 9.5/15",
     };
     Preset {
         name: format!("Q = {q:04b}"),
@@ -72,16 +73,17 @@ fn examples() -> Vec<Preset> {
     };
     // Corner order: 0 (0,0,0), 1 (1,0,0), 2 (0,1,0), 3 (1,1,0),
     //               4 (0,0,1), 5 (1,0,1), 6 (0,1,1), 7 (1,1,1).
+    // Slots: 0 = corners (4, 6), 1 = (5, 7), 2 = (1, 3), 3 = (0, 2).
     vec![
         preset(
             "A: open water",
-            "walls s = 9 below, w = 5 above: flat quad at 12/15, terrain at 1/6",
+            "rock s = 9 below, topped up with 6 water; 5 above: flat at 12.5/15, ground at 0.1",
             [9, 9, 0, 0, 9, 9, 0, 0],
-            [0, 0, 5, 5, 0, 0, 5, 5],
+            [6, 6, 5, 5, 6, 6, 5, 5],
         ),
         preset(
             "B: one unit short",
-            "full below, w = 7 above: surface at 14/15, the top of this cell",
+            "full below, w = 7 above: surface at 14.5/15, near the top of this cell",
             [0; 8],
             [15, 15, 7, 7, 15, 15, 7, 7],
         ),
@@ -93,19 +95,19 @@ fn examples() -> Vec<Preset> {
         ),
         preset(
             "C: steep bank",
-            "water at 13/15 meets a bank (s 15 / 12) 0.608 across the face",
+            "water at 13.5/15 meets a bank (s 15 / 12) 0.6125 across the face",
             [0, 0, 0, 0, 15, 15, 12, 12],
             [15, 15, 6, 6, 0, 0, 0, 0],
         ),
         preset(
             "D: bank corner",
-            "pentagon at 0.6; corner 4's column is a bank (s 15 / 6), shore 0.14 from it",
+            "pentagon at 9.5/15; corner 4's column is a bank drawn at 0.9, shore 0.148 from it",
             [0, 0, 0, 0, 15, 0, 6, 0],
             [15, 15, 2, 2, 0, 15, 0, 2],
         ),
         preset(
             "E: rock through the surface",
-            "pentagon at 0.6; the waterline climbs onto the rock at corner 3",
+            "pentagon at 9.5/15; the waterline climbs onto the rock at corner 3",
             [15, 15, 0, 15, 15, 15, 0, 0],
             [0, 0, 2, 0, 0, 0, 2, 2],
         ),
@@ -117,35 +119,33 @@ fn examples() -> Vec<Preset> {
         ),
         preset(
             "F: ledge dips in",
-            "ledge s = 13 at corner 6 is drawn below the pool: its slot is left out",
+            "ledge s = 14 at corner 6, drawn at 8.5/15, below the pool: its slot is left out",
+            [0, 0, 0, 0, 0, 0, 14, 0],
+            [15, 15, 2, 2, 15, 15, 1, 2],
+        ),
+        preset(
+            "F: ledge touches",
+            "ledge s = 13 drawn exactly at the pool's level, its slab full: slot left out",
             [0, 0, 0, 0, 0, 0, 13, 0],
             [15, 15, 2, 2, 15, 15, 2, 2],
         ),
         preset(
             "F: ledge above",
-            "ledge s = 10 drawn at 0.75: flat quad at 0.6, continuing under it",
+            "ledge s = 10 drawn at 12.5/15: flat quad at 9.5/15, continuing under it",
             [0, 0, 0, 0, 0, 0, 10, 0],
             [15, 15, 2, 2, 15, 15, 2, 2],
         ),
         preset(
-            "F: thick ledge",
-            "ledge s = 15 holds no water: the slot under it stays at 7/15",
-            [0, 0, 0, 0, 0, 0, 15, 0],
-            [15, 15, 2, 2, 15, 15, 0, 2],
-        ),
-        preset(
             "fallback: open air",
-            "pool at 0.6 next to dry open ground: shore from occupancy, not terrain",
+            "pool next to dry ground at the same floor (unsettled): shore from occupancy",
             [15, 15, 0, 0, 15, 15, 0, 0],
             [0, 0, 2, 2, 0, 0, 0, 0],
         ),
-        // Slots 0 and 1 (corners 4, 5 below) hold w = 8 with nothing above:
-        // surface at t = 0. Slots 2 and 3 (corners 1, 0 and above) are bank.
         preset(
             "level at a terrain vertex",
-            "level exactly 0: shoreline points are the terrain's bottom-edge vertices",
-            [15, 15, 15, 15, 0, 0, 0, 0],
-            [0, 0, 0, 0, 8, 8, 0, 0],
+            "water at 10.5/15, the bank drawn at 10.5/15: the shoreline lands on its vertex",
+            [0, 0, 0, 0, 15, 15, 3, 3],
+            [15, 15, 3, 3, 0, 0, 0, 0],
         ),
     ]
 }

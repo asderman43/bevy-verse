@@ -1,7 +1,7 @@
 //! The top-surface mesher, cell by cell (`docs/water-surface.md` §3).
 //!
 //! Unwelded, like `marching_cubes.rs`: three fresh vertices per triangle, all
-//! carrying the triangle's face normal. Output goes into plain `Vec`s; the
+//! carrying the triangle's face normal; zero-area triangles are dropped. Output goes into plain `Vec`s; the
 //! surface is a thin band of cells, so the terrain's exact-count scan isn't
 //! worth its machinery here yet.
 
@@ -78,39 +78,72 @@ pub(crate) fn extract_with_overlap(
 pub(crate) struct Corners {
     pub s: [u8; 8],
     pub w: [u8; 8],
-    /// Occupancy: `W_MAX` for a solid corner, its water otherwise.
-    pub o: [u8; 8],
+    /// Bottom fill: how much of the corner's slab is filled from its bottom,
+    /// by rock and water together (§1.2). The inside test and the height
+    /// formula both read it.
+    pub b: [u8; 8],
     /// `S`: corners with `s > ISO`.
     pub solid: u8,
-    /// `O`: corners with `o > W_ISO`.
+    /// `O`: corners with `b > W_ISO`.
     pub inside: u8,
-    /// `M`: corners holding any water.
+    /// Corners whose water lies on this cell's vertical edges from below: all
+    /// of them except a ledge, whose water is under its rock, in the edge below.
     pub wet: u8,
 }
 
 impl Corners {
+    /// # Panics
+    /// In debug builds, if a corner holds more than `S_MAX` of rock and water.
     pub fn load(solid: &VoxelBuffer, water: &VoxelBuffer, (x, y, z): (usize, usize, usize)) -> Self {
         let s = solid.cell_corners(x, y, z);
         let mut w = water.cell_corners(x, y, z);
-        let mut o = [0; 8];
-        let (mut solid_mask, mut inside, mut wet) = (0, 0, 0);
 
+        // What each corner rests on. The upper corners rest on the lower ones;
+        // the lower ones on the row below the cell, or, at the bottom of the
+        // buffer, on ground assumed to be there.
+        let mut below_solid = [true; 8];
         for c in 0..8 {
+            below_solid[c] = if c & 2 != 0 {
+                s[c & !2] > ISO
+            } else if y == 0 {
+                true
+            } else {
+                solid.get(x + (c & 1), y - 1, z + (c >> 2 & 1)) > ISO
+            };
+        }
+
+        let mut b = [0; 8];
+        let (mut solid_mask, mut inside, mut wet) = (0, 0, 0);
+        for c in 0..8 {
+            debug_assert!(
+                s[c] as u16 + w[c] as u16 <= S_MAX as u16,
+                "a sample holds at most {S_MAX} of rock and water, got s {} + w {}",
+                s[c],
+                w[c],
+            );
             if w[c] < W_EPS {
                 w[c] = 0;
             }
             let is_solid = s[c] > ISO;
-            o[c] = if is_solid { W_MAX } else { w[c] };
+            let ledge = is_solid && !below_solid[c];
+            b[c] = match (below_solid[c], ledge) {
+                // Rock resting on rock, water on top of it.
+                (true, _) => s[c] + w[c],
+                // A ledge: rock hangs at the top, its water is underneath.
+                (false, true) => s[c],
+                // Rock held from above or the side doesn't carry water.
+                (false, false) => w[c],
+            };
             solid_mask |= (is_solid as u8) << c;
-            inside |= ((o[c] > W_ISO) as u8) << c;
-            wet |= ((w[c] > 0) as u8) << c;
+            inside |= ((b[c] > W_ISO) as u8) << c;
+            wet |= ((w[c] > 0 && !ledge) as u8) << c;
         }
 
         debug_assert_eq!(solid_mask & !inside, 0, "a solid corner is always inside");
         Corners {
             s,
             w,
-            o,
+            b,
             solid: solid_mask,
             inside,
             wet,
@@ -127,17 +160,19 @@ fn bit(mask: u8, i: usize) -> bool {
 pub(crate) fn slot_height(c: &Corners, k: usize, interpolate: Interpolate) -> Option<f32> {
     let (lo, hi) = VERT_EDGE[k];
 
+    // Open water, or water resting on the terrain: the bottom fill crosses
+    // the isolevel on this edge. With no water this is exactly where the
+    // terrain draws the rock (`edge_t`), so the water rests on it.
     let crosses = bit(c.inside, lo) && !bit(c.inside, hi);
     if crosses && (bit(c.wet, lo) || bit(c.wet, hi)) {
-        return Some(VERT_T[(c.o[lo] + c.o[hi]) as usize]);
+        return Some(VERT_T[(c.b[lo] + c.b[hi]) as usize]);
     }
 
     // Water under a ledge: upper corner solid, lower corner not solid but
-    // inside, which also makes it wet. The upper corner's rock is left out;
-    // only the water standing under it counts.
+    // inside. The ledge's water lies under its rock, at the bottom of its slab.
     let ledge = bit(c.solid, hi) && !bit(c.solid, lo) && bit(c.inside, lo);
-    if ledge {
-        let n = c.w[lo] + c.w[hi];
+    if ledge && (bit(c.wet, lo) || c.w[hi] > 0) {
+        let n = c.b[lo] + c.w[hi];
         if below_ledge(n, c.s[lo], c.s[hi], interpolate) {
             return Some(VERT_T[n as usize]);
         }
@@ -146,17 +181,20 @@ pub(crate) fn slot_height(c: &Corners, k: usize, interpolate: Interpolate) -> Op
     None
 }
 
-/// Whether the water height `(n − W_ISO − 1) / W_MAX` lies strictly below
-/// where the terrain draws the ledge on this edge, decided exactly in
-/// integers. The terrain crosses at `(ISO + 0.5 − s_lo) / (s_hi − s_lo)`, or at
-/// the midpoint without interpolation; both sides are doubled to clear the
-/// half.
+/// Whether water filled to `n` from the edge's bottom, `(n − 7.5) / W_MAX` up
+/// it, stays below the ledge the terrain draws there, decided exactly in
+/// integers.
+///
+/// The terrain hangs the ledge `(s_hi + s_lo − 7.5) / S_MAX` down from the
+/// upper corner (`edge_t`), so the water is below it exactly when
+/// `n + s_hi + s_lo < 2·S_MAX`. Without interpolation the ledge is at the
+/// midpoint.
 pub(crate) fn below_ledge(n: u8, s_lo: u8, s_hi: u8, interpolate: Interpolate) -> bool {
-    let rise = 2 * (n as i32 - W_ISO as i32 - 1);
     if interpolate {
-        rise * (s_hi as i32 - s_lo as i32) < W_MAX as i32 * (2 * ISO as i32 + 1 - 2 * s_lo as i32)
+        (n as u16 + s_hi as u16 + s_lo as u16) < 2 * S_MAX as u16
     } else {
-        rise < W_MAX as i32
+        // (n − 7.5) / W_MAX < 1/2.
+        n < W_MAX
     }
 }
 
@@ -195,14 +233,19 @@ impl Mesher<'_> {
             }
         }
 
-        // 3. Triangles, each with its own face normal.
+        // 3. Triangles, each with its own face normal. Two shoreline points
+        // can land on the same terrain vertex -- the level exactly at a dry
+        // corner's drawn ground -- and the triangle between them has no area;
+        // it is skipped.
         let case = MS_TRIS[q];
         for tri in &case.tris[..case.count] {
             let [p0, p1, p2] = tri.map(|slot| match slot {
                 Slot::V(k) => v[k],
                 Slot::F(f) => f_points[f],
             });
-            let normal = face_normal(p0, p1, p2).unwrap_or(Vec3::Y);
+            let Some(normal) = face_normal(p0, p1, p2) else {
+                continue;
+            };
             let first = out.positions.len() as u32;
             out.positions.extend([p0, p1, p2]);
             out.normals.extend([normal; 3]);
@@ -289,9 +332,11 @@ impl Mesher<'_> {
 }
 
 /// The fallback shoreline point (§3.3): where the occupancy contour that
-/// leaves the wet edge crosses the face's next edge, interpolated on `o` to
-/// `W_ISO + 0.5` from the inside corner. It depends only on that edge's two
-/// corners, so the cell across a level step computes the same point.
+/// leaves the wet edge crosses the face's next edge. It is placed the way the
+/// terrain places its own vertices, on the bottom fill instead of the rock: by
+/// the volume formula on a vertical edge, linearly to 7.5 on a horizontal one.
+/// It depends only on that edge's two corners, so the cell across a level step
+/// computes the same point.
 ///
 /// `None` when the wet edge is not on the occupancy contour at all, which is
 /// a surface edge kept by the ledge rule.
@@ -306,8 +351,12 @@ fn occupancy_crossing(cell: (usize, usize, usize), c: &Corners, f: usize, k_wet:
 
     let (p, q) = EDGE_VERTEX_INDICES[FACE_EDGES[f][other]];
     let (i, u) = if bit(c.inside, p) { (p, q) } else { (q, p) };
-    let t = (c.o[i] as f32 - (W_ISO as f32 + 0.5)) * RECIP[(c.o[i] - c.o[u]) as usize];
     let (from, to) = (corner(cell, i), corner(cell, u));
+    let t = if from.y != to.y {
+        (c.b[i] as f32 + c.b[u] as f32 - (W_ISO as f32 + 0.5)) / W_MAX as f32
+    } else {
+        (c.b[i] as f32 - (W_ISO as f32 + 0.5)) * RECIP[(c.b[i] - c.b[u]) as usize]
+    };
     Some(from + (to - from) * t)
 }
 
