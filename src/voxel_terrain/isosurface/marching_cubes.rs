@@ -144,9 +144,11 @@ fn emit(
                     };
                     let (a, b, c) = (place(0), place(1), place(2));
 
-                    // A zero-area triangle -- a sample sitting exactly on the
-                    // isolevel -- has no face normal. It is invisible, so any
-                    // unit normal will do; the edge's own direction is one.
+                    // Vertices sit strictly inside their edges, and no line
+                    // meets three such points of a cube, so a triangle always
+                    // has area. Kept anyway against rounding: a zero-area
+                    // triangle is invisible, so any unit normal will do, and
+                    // the edge's own direction is one.
                     let normal = face_normal(a, b, c)
                         .unwrap_or_else(|| edge_fallback(edges[first] as usize, &corners));
 

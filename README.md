@@ -202,7 +202,8 @@ surface, emit triangles approximating where the surface crosses that cube.
 The field is a flat `Vec<u8>` indexed `x + y*size + z*size*size`, so a row of
 samples along X is contiguous — which is what flying edges scans. Samples run
 `0..=S_MAX` (15), and the isolevel is the constant `ISO` (7); both live in
-`isosurface/mod.rs`. Neither is per job.
+`isosurface/mod.rs`. Neither is per job. Vertices interpolate to `ISO + 0.5`,
+halfway between the highest empty value and the lowest solid one.
 
 **A sample of `<= ISO` is empty space; `> ISO` is solid.** This is
 forced, not a preference: `TRIANGLE_TABLE` winds each triangle so its normal
@@ -284,8 +285,8 @@ also writes its normal: the gradient at the edge's two corners (central
 differences of the neighbouring samples, one-sided on the buffer's faces),
 blended by the same `t` as the position and negated, since density rises into
 the solid. It needs only the voxel buffer, so it has the same owner and moment as
-the position write. Where the two gradients cancel, which only happens on a
-sample sitting exactly on the isolevel, it falls back to the edge's direction
+the position write. Where the two gradients cancel, in a symmetric spot such
+as an empty sample between two solid ones, it falls back to the edge's direction
 from its solid end to its empty end.
 
 **Ownership: pass 4 writes exactly what pass 2 counted.** Pass 2 is already the
@@ -605,14 +606,12 @@ What's stubbed or in flight:
   is solid. Get it backwards and the mesh is inside-out — and because back-face
   culling then hides it, the symptom is "nothing renders" rather than anything
   that points at the cause. See [Conventions](#conventions-used-in-this-codebase).
-- **Inside test is `<=`, not `<`.** A sample exactly equal to the isolevel counts
-  as empty, and interpolates to `t = 0` — which collapses vertices onto grid
-  corners and emits zero-area triangles. That's legal marching cubes output, but
-  a degenerate triangle has no face normal. Neither method produces NaN for it:
-  marching cubes falls back to the edge direction, and flying edges' gradient
-  only needs the samples. Nudge
-  such samples off the isolevel if you generate fields analytically;
-  `test_maps::sphere` does.
+- **Inside test is `<=`, not `<`.** A sample exactly equal to `ISO` counts as
+  empty. Vertices interpolate to `ISO + 0.5`, not `ISO`, so such a sample is
+  harmless: every crossing lands at least half a unit from either corner,
+  strictly inside its edge. No vertex sits on a grid point, and no triangle
+  collapses to zero area. Interpolating to `ISO` would put the vertex right on
+  that sample (`t = 0`), which is what this avoids.
 - **The methods produce the same triangles but different vertices.** Only flying
   edges welds, so switching method changes the shading — smooth to flat — and
   the vertex count, by design. The *geometry* must not change: if the triangles

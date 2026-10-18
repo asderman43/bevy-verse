@@ -3,8 +3,8 @@
 //! Remember the sign convention: `> ISO` is solid, so *raising* a sample fills
 //! it in. Most fields write their samples relative to [`ISO`]: an empty
 //! background of `ISO - 2`, solid at `ISO + 2` and up. They were written for an
-//! `i8` field at isolevel 2 and moved onto the `u8` scale by a plain shift, so
-//! every vertex and gradient comes out bit for bit where it did then.
+//! `i8` field at isolevel 2 and moved onto the `u8` scale by a plain shift,
+//! which keeps every value's distance from the isolevel.
 
 use super::{VoxelBuffer, ISO, S_MAX};
 
@@ -123,14 +123,7 @@ pub fn sphere(size: usize, radius: f32) -> VoxelBuffer {
 
                 // Solid inside, so the field has to run high inside.
                 let lift = ((radius - d) * 3.0).clamp(-(ISO as f32), (S_MAX - ISO) as f32) as i8;
-                let mut v = ISO.saturating_add_signed(lift);
-                // A sample sitting exactly on the isolevel interpolates to
-                // t == 0, collapsing vertices onto grid corners and emitting
-                // zero-area triangles. Legal output, but not useful to look at.
-                if v == ISO {
-                    v = ISO + 1;
-                }
-                buffer.set(x, y, z, v);
+                buffer.set(x, y, z, ISO.saturating_add_signed(lift));
             }
         }
     }

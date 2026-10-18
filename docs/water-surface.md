@@ -51,11 +51,12 @@ compile-time constants, not per-job or configured values:
 | `W_ISO` | water isolevel, **7**; a non-solid sample is inside when `w > W_ISO` |
 
 Chosen 2026-10-19: water uses the same scale as the terrain. `W_MAX` divides
-`S_MAX`, so the capacity in §1.2 is exact (`15 − s`). Over a full wall, the first
-unit of water lands exactly on the terrain crossing (8/15, with interpolation to
-`ISO`); the column's bottom is at 7/15. One unit is 1/15 of a cell, and at most
-7/15 of a cell can be hidden under the terrain (see Limitations). `W_EPS` should
-be 0 or 1.
+`S_MAX`, so the capacity in §1.2 is exact (`15 − s`). Over a full wall with
+empty space above, the terrain crosses at 1/2 (it interpolates to `ISO + 0.5`),
+the water column's bottom is at 7/15 and the first unit of water at 8/15, just
+above the terrain. One unit is 1/15 of a cell, and at most 97/240 ≈ 0.40 of a
+cell can be hidden under the terrain (see Limitations). `W_EPS` should be 0 or
+1.
 
 In general the only checks are `1 ≤ W_MAX ≤ 255` and `0 ≤ W_ISO < W_MAX`. Rock is never converted into water
 units, so nothing ties the two resolutions together. They stay compatible
@@ -212,7 +213,8 @@ the space under the rock.
 
 The height alone doesn't place the vertex; the terrain decides that. Compare
 `t` with where the terrain draws the ledge on that edge,
-`t_s = (ISO − s_lo)/(s_hi − s_lo)` up from the lower corner:
+`t_s = (ISO + 0.5 − s_lo)/(s_hi − s_lo)` up from the lower corner (the
+terrain mesher interpolates to `ISO + 0.5`):
 
 - `t < t_s`: the edge carries the surface at `t`, and the water stays flat under
   the ledge.
@@ -222,8 +224,10 @@ The height alone doesn't place the vertex; the terrain decides that. Compare
   so no clamp is needed.
 
 Do the comparison exactly, in integers:
-`(w_lo + w_hi − W_ISO − 1)·(s_hi − s_lo) < W_MAX·(ISO − s_lo)`. In floats, exact
-ties come out one rounding step off. `w_lo + w_hi < 2·W_MAX`, so `VERT_T` covers
+`2·(w_lo + w_hi − W_ISO − 1)·(s_hi − s_lo) < W_MAX·(2·ISO + 1 − 2·s_lo)`, both
+sides doubled to clear the half. In floats, near-ties come out one rounding step
+off. With `W_MAX` odd, as at 15, the right side is odd and the left even, so
+the two can never tie. `w_lo + w_hi < 2·W_MAX`, so `VERT_T` covers
 it.
 
 ### 3.3 Shoreline points
@@ -684,11 +688,12 @@ below counts as full.
 - **Thin water can be drawn under the terrain. This is accepted for now
   (2026-10-13).** Water heights come from the slab model, but terrain vertices
   use linear interpolation, and the two agree on classification, not position.
-  The worst case is a wall below and invisible rock right at the isolevel above
-  (`s_hi = ISO`): the terrain is drawn at the top of the edge, while one unit of
-  water sits just over halfway. The most that can be hidden is exactly
-  `W_ISO / W_MAX` of a cell, just under half (0.498 at `W_MAX = 255`, 0.25 at 4),
-  checked exhaustively. With `interpolate = false` the terrain sits at the
+  The worst case is a full wall below and invisible rock right at the isolevel
+  above (`s_lo = S_MAX`, `s_hi = ISO`): the terrain is drawn high on the edge,
+  at 15/16, while one unit of water sits at 8/15. The most that can be hidden is
+  97/240 ≈ 0.40 of a cell, checked exhaustively over vertical edges at
+  15 / 7 / 15 / 7. (Interpolating the terrain to `ISO`, it was `W_ISO / W_MAX`
+  = 7/15, with the terrain drawn at the very top of the edge.) With `interpolate = false` the terrain sits at the
   midpoint instead. If it ever needs fixing: lift `H_k` to the terrain crossing
   on that edge (this breaks flatness), or place the terrain's vertical-edge
   vertices by the slab model too (this changes how the terrain looks).
@@ -712,5 +717,6 @@ below counts as full.
 ## 11. Open questions
 
 1. ~~**Storage migration** (§9)~~: done 2026-10-19, with `S_MAX = 15`,
-   `ISO = 7` as constants; `W_MAX = 15`, `W_ISO = 7` chosen the same day. The
-   worked examples in §7 still use 255 / 127 and need redoing on this scale.
+   `ISO = 7` as constants; `W_MAX = 15`, `W_ISO = 7` chosen the same day, and
+   the terrain now interpolates to `ISO + 0.5`. The worked examples in §7 still
+   use 255 / 127 and interpolation to `ISO`, and need redoing on both counts.

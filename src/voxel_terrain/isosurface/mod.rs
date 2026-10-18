@@ -96,8 +96,18 @@ pub const MAX_SIZE: usize = 64;
 pub const S_MAX: u8 = 15;
 
 /// The terrain isolevel: a sample is solid when `> ISO` and empty when
-/// `<= ISO`. Vertices are interpolated to where the field reaches `ISO`.
+/// `<= ISO`.
+///
+/// Vertices are interpolated to where the field reaches `ISO + 0.5`, halfway
+/// between the highest empty value and the lowest solid one. For integer
+/// samples that classifies exactly as `ISO` does, but every crossing lands
+/// strictly inside its edge -- at least half a unit from either corner -- so no
+/// vertex sits on a grid point and no triangle collapses to zero area. It is
+/// also symmetric: swapping solid and empty leaves the surface where it was.
 pub const ISO: u8 = 7;
+
+/// [`ISO`] as the value vertices are interpolated to. See there.
+const CROSSING: f32 = ISO as f32 + 0.5;
 
 /// Which algorithm to extract with.
 ///
@@ -135,7 +145,7 @@ pub enum Method {
 
 /// Where along a cut edge to put the vertex.
 ///
-/// `true` places it where the field actually crosses [`ISO`]; `false`
+/// `true` places it where the field actually crosses [`ISO`] + 0.5; `false`
 /// puts it at the edge midpoint, which gives the blocky look and skips a
 /// divide per vertex.
 pub type Interpolate = bool;
@@ -317,9 +327,10 @@ pub(crate) fn edge_t(edge: usize, corners: &[u8; 8], interpolate: Interpolate) -
 
     let (a, b) = EDGE_VERTEX_INDICES[edge];
     let (from, to) = (corners[a] as f32, corners[b] as f32);
-    // Only ever called for an edge the surface crosses, so the corner values
-    // straddle the isolevel and `to - from` cannot be zero.
-    (ISO as f32 - from) / (to - from)
+    // Only ever called for an edge the surface crosses, so one corner is at
+    // most ISO and the other at least ISO + 1: `to - from` cannot be zero, and
+    // the result is strictly inside (0, 1).
+    (CROSSING - from) / (to - from)
 }
 
 /// The point `t` of the way along `edge` of the cell whose lowest corner is
@@ -327,7 +338,7 @@ pub(crate) fn edge_t(edge: usize, corners: &[u8; 8], interpolate: Interpolate) -
 ///
 /// Every component of `end - start` is -1, 0 or 1, so `t * (end - start)` is
 /// exact, and this lands on bit for bit the same point the longhand
-/// `start + (ISO - from) * (end - start) / (to - from)` does.
+/// `start + (ISO + 0.5 - from) * (end - start) / (to - from)` does.
 pub(crate) fn place_at(cell: Vec3, edge: usize, t: f32) -> Vec3 {
     let (a, b) = EDGE_VERTEX_INDICES[edge];
     let (start, end) = (VERTEX_POSITIONS[a], VERTEX_POSITIONS[b]);
@@ -339,8 +350,8 @@ pub(crate) fn place_at(cell: Vec3, edge: usize, t: f32) -> Vec3 {
 /// the edge's two corners.
 ///
 /// Density rises into the solid, so the gradient points inward and the normal
-/// is its negation. Where the two corners' gradients cancel -- only possible
-/// on a tie, a sample sitting exactly on the isolevel -- it falls back to
+/// is its negation. Where the two corners' gradients cancel -- a symmetric
+/// spot, such as an empty sample between two solid ones -- it falls back to
 /// [`edge_fallback`].
 pub(crate) fn gradient_normal(
     buffer: &VoxelBuffer,

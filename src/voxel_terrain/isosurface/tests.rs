@@ -381,18 +381,18 @@ fn normal_fields() -> Vec<(&'static str, Field)> {
         ("flat_slab", test_maps::flat_slab(6)),
         ("pseudo_random", test_maps::pseudo_random(12, 0xC0FFEE)),
         ("size_2", size_2()),
-        ("gradient_tie", gradient_tie()),
+        ("cancelled_gradient", cancelled_gradient()),
     ]
 }
 
 /// A field where the density gradient cancels at a vertex: two solid samples
-/// either side of one sitting exactly on the isolevel, so both edges into it
-/// put a vertex on that sample, where the gradient is zero.
-fn gradient_tie() -> Field {
+/// either side of an empty one, on an empty background. Central differences
+/// come out exactly zero at all three of them, so the two X edges into the
+/// middle sample have zero gradient at both ends.
+fn cancelled_gradient() -> Field {
     let mut buffer = test_maps::filled(5, ISO - 2);
     buffer.set(1, 2, 2, ISO + 3);
     buffer.set(3, 2, 2, ISO + 3);
-    buffer.set(2, 2, 2, ISO);
     buffer
 }
 
@@ -508,20 +508,18 @@ fn a_slab_has_exactly_vertical_normals() {
 /// from the solid end to the empty end -- never to NaN.
 #[test]
 fn a_cancelled_gradient_falls_back_to_the_edge() {
-    let buffer = gradient_tie();
+    let buffer = cancelled_gradient();
     let surface = flying_edges::extract(&buffer, true);
 
-    let mut at_tie: Vec<Vec3> = surface
-        .positions
-        .iter()
-        .zip(&surface.normals)
-        .filter(|(p, _)| **p == Vec3::splat(2.0))
-        .map(|(_, n)| *n)
-        .collect();
-    at_tie.sort_by(|a, b| a.x.total_cmp(&b.x));
+    let normal_at = |p: Vec3| {
+        let i = surface.positions.iter().position(|&q| q == p);
+        surface.normals[i.unwrap_or_else(|| panic!("no vertex at {p}"))]
+    };
 
-    // One vertex from the solid sample on each side.
-    assert_eq!(at_tie, vec![-Vec3::X, Vec3::X]);
+    // Values 10, 5, 10 cross 7.5 at the midpoint of each edge. The left solid
+    // sample's empty side is +X, the right one's -X.
+    assert_eq!(normal_at(vec3(1.5, 2.0, 2.0)), Vec3::X);
+    assert_eq!(normal_at(vec3(2.5, 2.0, 2.0)), -Vec3::X);
 }
 
 /// Marching cubes' three vertices per triangle all carry that triangle's own
@@ -564,7 +562,7 @@ fn place_at_lands_where_the_longhand_formula_does() {
                     let (start, end) = (VERTEX_POSITIONS[a], VERTEX_POSITIONS[b]);
                     let (from, to) = (corners[a] as f32, corners[b] as f32);
                     let longhand =
-                        cell + (start + (ISO as f32 - from) * (end - start) / (to - from));
+                        cell + (start + (ISO as f32 + 0.5 - from) * (end - start) / (to - from));
 
                     assert_eq!(place_vertex(cell, edge, &corners, true), longhand);
                     assert_eq!(
@@ -574,6 +572,48 @@ fn place_at_lands_where_the_longhand_formula_does() {
                 }
             }
         }
+    }
+}
+
+/// Interpolating to `ISO + 0.5` puts every crossing at least half a unit from
+/// either corner, so on any field, even dense noise full of samples on the
+/// isolevel, no vertex lands on a grid point and no triangle loses its area.
+#[test]
+fn vertices_sit_strictly_inside_their_edges() {
+    let buffer = test_maps::pseudo_random(12, 0xC0FFEE);
+    assert!(buffer.samples().contains(&ISO), "the field should hold ties");
+    let cells = buffer.cells_per_axis();
+
+    for z in 0..cells {
+        for y in 0..cells {
+            for x in 0..cells {
+                let corners = buffer.cell_corners(x, y, z);
+                for (edge, &(a, b)) in EDGE_VERTEX_INDICES.iter().enumerate() {
+                    if (corners[a] <= ISO) != (corners[b] <= ISO) {
+                        let t = super::edge_t(edge, &corners, true);
+                        assert!(t > 0.0 && t < 1.0, "edge {edge} of ({x}, {y}, {z}): t = {t}");
+                    }
+                }
+            }
+        }
+    }
+
+    for method in [Method::FlyingEdges, Method::MarchingCubes] {
+        let surface = extract(&ExtractionJob {
+            buffer: buffer.clone(),
+            method,
+            interpolate: true,
+        });
+        let degenerate = surface
+            .indices
+            .chunks(3)
+            .filter(|t| {
+                let [a, b, c] = [0, 1, 2].map(|k| surface.positions[t[k] as usize]);
+                super::face_normal(a, b, c).is_none()
+            })
+            .count();
+        assert!(!surface.is_empty());
+        assert_eq!(degenerate, 0, "{method:?}: {degenerate} zero-area triangles");
     }
 }
 
@@ -664,19 +704,21 @@ mod passes {
     /// edges should allocate. Weld one edge too few and the counts diverge;
     /// weld one too many and two surfaces get stitched together.
     ///
-    /// Without interpolation, so that distinct edges cannot land on the same
-    /// point: a sample sitting exactly on the isolevel interpolates onto a grid
-    /// corner, and two edges sharing that corner would then coincide.
+    /// That relies on distinct edges never sharing a position, which holds
+    /// because every vertex sits strictly inside its edge.
     #[test]
     fn flying_edges_welds_exactly_the_shared_vertices() {
-        for field in [
+        for (field, interpolate) in [
             test_maps::terrain(),
             test_maps::sphere(16, 5.0),
             test_maps::pseudo_random(8, 0x5EED),
-        ] {
+        ]
+        .into_iter()
+        .flat_map(|field| [(field.clone(), true), (field, false)])
+        {
             let buffer = field;
-            let fe = flying_edges::extract(&buffer, false);
-            let mc = marching_cubes::extract(&buffer, false);
+            let fe = flying_edges::extract(&buffer, interpolate);
+            let mc = marching_cubes::extract(&buffer, interpolate);
 
             let mut distinct: Vec<[i32; 3]> = mc
                 .positions
