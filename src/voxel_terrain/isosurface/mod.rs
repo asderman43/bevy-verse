@@ -345,6 +345,36 @@ pub(crate) fn place_at(cell: Vec3, edge: usize, t: f32) -> Vec3 {
     cell + (start + t * (end - start))
 }
 
+/// The terrain vertex on the grid edge running along `axis` (0 = X, 1 = Y,
+/// 2 = Z) from sample `(x, y, z)`, bit for bit where flying edges puts it.
+///
+/// Flying edges writes each vertex from the edge's owner, the cell whose
+/// lowest corner is the edge's lower sample, through table edge 0, 3 or 8. On
+/// the buffer's far faces that cell does not exist, and the boundary cell
+/// writes it through its own table edge instead (`owned_slots`). This follows
+/// the same rule through the same [`edge_t`] and [`place_at`], so anything
+/// that has to meet the terrain mesh exactly -- the water's shoreline -- can
+/// call it with whichever cell it is in.
+///
+/// Only meaningful for an edge the surface crosses.
+pub(crate) fn terrain_vertex(
+    buffer: &VoxelBuffer,
+    (x, y, z): (usize, usize, usize),
+    axis: usize,
+    interpolate: Interpolate,
+) -> Vec3 {
+    let last = buffer.size() - 2;
+    let (cx, cy, cz) = (x.min(last), y.min(last), z.min(last));
+    let origin = (axis, x - cx, y - cy, z - cz);
+    let edge = (0..12)
+        .find(|&e| tables::EDGE_AXIS_ORIGIN[e] == origin)
+        .expect("every axis and corner offset is some table edge");
+
+    let corners = buffer.cell_corners(cx, cy, cz);
+    let cell = vec3(cx as f32, cy as f32, cz as f32);
+    place_at(cell, edge, edge_t(edge, &corners, interpolate))
+}
+
 /// The smooth normal of the vertex `t` of the way along `edge`, in the cell
 /// whose lowest corner is `(x, y, z)`: the density gradient, blended between
 /// the edge's two corners.
