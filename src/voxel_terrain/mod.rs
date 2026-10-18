@@ -5,6 +5,7 @@ pub mod isosurface;
 pub mod terrain;
 pub mod voxel;
 pub mod voxels;
+pub mod water;
 
 // Re-export utils so submodules can use `super::util`.
 mod utils {
