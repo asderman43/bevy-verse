@@ -33,9 +33,9 @@ pub fn extract(solid: &VoxelBuffer, water: &VoxelBuffer, interpolate: Interpolat
     extract_with_overlap(solid, water, interpolate, SHORE_OVERLAP)
 }
 
-/// [`extract`] with an explicit shore overlap, so tests can check the
-/// shoreline against the terrain with it switched off.
-pub(crate) fn extract_with_overlap(
+/// [`extract`] with an explicit shore overlap, so the shoreline can be checked
+/// against the terrain with it switched off.
+pub fn extract_with_overlap(
     solid: &VoxelBuffer,
     water: &VoxelBuffer,
     interpolate: Interpolate,
@@ -72,6 +72,39 @@ pub(crate) fn extract_with_overlap(
     }
 
     surface
+}
+
+/// What the mesher sees in one cell, for debugging and the demo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellInfo {
+    /// Each corner's bottom fill.
+    pub bottom_fill: [u8; 8],
+    /// `S`, `O` and the wet mask, bit per corner.
+    pub solid: u8,
+    pub inside: u8,
+    pub wet: u8,
+    /// `Q`: which slots carry the surface, bit per slot.
+    pub surface_slots: u8,
+}
+
+/// Describes the cell whose lowest corner is `cell`.
+pub fn describe_cell(
+    solid: &VoxelBuffer,
+    water: &VoxelBuffer,
+    cell: (usize, usize, usize),
+    interpolate: Interpolate,
+) -> CellInfo {
+    let c = Corners::load(solid, water, cell);
+    let surface_slots = (0..4)
+        .filter(|&k| slot_height(&c, k, interpolate).is_some())
+        .fold(0, |q, k| q | 1 << k);
+    CellInfo {
+        bottom_fill: c.b,
+        solid: c.solid,
+        inside: c.inside,
+        wet: c.wet,
+        surface_slots,
+    }
 }
 
 /// One cell's corner values and masks (§3.1).
