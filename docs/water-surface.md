@@ -38,17 +38,26 @@ against air) are not part of this pass; see [Limitations](#limitations).
 
 ### 1.1 Values
 
-Each sample stores solid `s` and water `w`, both `u8`. The terrain and the water
-each have their own range and isolevel, and the two pairs are independent:
+Each sample stores solid `s` and water `w`, both `u8`, in two separate buffers
+with the same X-major indexing. The terrain and the water each have their own
+range and isolevel, and the two pairs are independent. All four are
+compile-time constants, not per-job or configured values:
 
 | name | meaning |
 |---|---|
-| `S_MAX` | maximum solid value, `1..=255` |
-| `ISO` | terrain isolevel; a sample is **solid when `s > ISO`**, as in the terrain mesher |
-| `W_MAX` | maximum water value, `1..=255`; one water unit raises the surface by `cs / W_MAX` |
-| `W_ISO` | water isolevel, `0..W_MAX`; a non-solid sample is inside when `w > W_ISO` |
+| `S_MAX` | maximum solid value; **15** (`isosurface::S_MAX`) |
+| `ISO` | terrain isolevel, **7** (`isosurface::ISO`); a sample is **solid when `s > ISO`**, as in the terrain mesher |
+| `W_MAX` | maximum water value, **15**; one water unit raises the surface by `cs / W_MAX` |
+| `W_ISO` | water isolevel, **7**; a non-solid sample is inside when `w > W_ISO` |
 
-The only checks are the ranges in the table. Rock is never converted into water
+Chosen 2026-10-19: water uses the same scale as the terrain. `W_MAX` divides
+`S_MAX`, so the capacity in §1.2 is exact (`15 − s`). Over a full wall, the first
+unit of water lands exactly on the terrain crossing (8/15, with interpolation to
+`ISO`); the column's bottom is at 7/15. One unit is 1/15 of a cell, and at most
+7/15 of a cell can be hidden under the terrain (see Limitations). `W_EPS` should
+be 0 or 1.
+
+In general the only checks are `1 ≤ W_MAX ≤ 255` and `0 ≤ W_ISO < W_MAX`. Rock is never converted into water
 units, so nothing ties the two resolutions together. They stay compatible
 because terrain vertices, and therefore shoreline points, only ever use `s` and
 `ISO`, and water heights only ever use `w`.
@@ -620,11 +629,12 @@ below counts as full.
 
 ## 9. Integration
 
-- **Prerequisite: storage.** `VoxelBuffer` holds `i8` today, and
-  `edge_t` / `case_index` take an `i8` isolevel. Water needs `u8` `(s, w)`
-  samples with the configurable `S_MAX` / `ISO` above, and the terrain mesher has
-  to read the same `s` values, or shoreline points won't sit on the terrain.
-  Store `(s, w)` as packed pairs, X-major like `VoxelBuffer`.
+- **Storage (done 2026-10-19).** `VoxelBuffer` holds `u8` samples on
+  `0..=S_MAX`, and the terrain mesher classifies and interpolates against the
+  constant `ISO`. The water mesher reads the same `s` buffer, so shoreline points
+  sit on the terrain. `w` goes in its own buffer with the same X-major indexing,
+  not interleaved with `s`: that keeps `VoxelBuffer::row` a contiguous slice for
+  the scan's bitmask pass.
 - **Shape.** Mirror `IsosurfacePlugin`: a job in and a renderer-agnostic surface
   out, with nothing touching `Assets<Mesh>` inside the mesher, so it stays
   testable outside the ECS.
@@ -701,5 +711,6 @@ below counts as full.
 
 ## 11. Open questions
 
-1. **Storage migration** (§9): the terrain moves to `u8` with configurable
-   `S_MAX` / `ISO` before the water mesher can share its vertices.
+1. ~~**Storage migration** (§9)~~: done 2026-10-19, with `S_MAX = 15`,
+   `ISO = 7` as constants; `W_MAX = 15`, `W_ISO = 7` chosen the same day. The
+   worked examples in §7 still use 255 / 127 and need redoing on this scale.

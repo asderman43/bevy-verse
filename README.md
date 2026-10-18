@@ -166,7 +166,6 @@ outside the ECS entirely.
 fn request(mut queue: ResMut<IsosurfaceQueue>) {
     queue.push(ExtractionJob {
         buffer: VoxelBuffer::new(32),
-        isolevel: 2,
         method: Method::FlyingEdges,
         interpolate: true,
     });
@@ -200,13 +199,15 @@ surface, emit triangles approximating where the surface crosses that cube.
 
 ### Conventions used in this codebase
 
-The field is a flat `Vec<i8>` indexed `x + y*size + z*size*size`, so a row of
-samples along X is contiguous — which is what flying edges scans.
+The field is a flat `Vec<u8>` indexed `x + y*size + z*size*size`, so a row of
+samples along X is contiguous — which is what flying edges scans. Samples run
+`0..=S_MAX` (15), and the isolevel is the constant `ISO` (7); both live in
+`isosurface/mod.rs`. Neither is per job.
 
-**A sample of `<= isolevel` is empty space; `> isolevel` is solid.** This is
+**A sample of `<= ISO` is empty space; `> ISO` is solid.** This is
 forced, not a preference: `TRIANGLE_TABLE` winds each triangle so its normal
 points toward the corners whose case bit is set, and the case bit is set for
-`<= isolevel`. So for normals to point *out of* the solid — which back-face
+`<= ISO`. So for normals to point *out of* the solid — which back-face
 culling and lighting both assume — the set bits have to be the empty side. Feed
 in a field with the opposite sense and the mesh comes out uniformly inside-out:
 invisible from outside, lit from within. `winding_faces_away_from_the_solid`
@@ -239,7 +240,7 @@ That counting isn't specific to how flying edges then emits, so it lives in
 same trim; what they do afterwards is the only place they differ.
 
 - **Pass 1** (per X row): pack the row's samples into a single `u64`, bit `x` set
-  when sample `x` is `<= isolevel`. A chunk is at most 64 samples per axis, so a
+  when sample `x` is `<= ISO`. A chunk is at most 64 samples per axis, so a
   row always fits in one word — and an edge's 2-bit case is then just
   `(mask >> x) & 0b11`, with no per-edge storage at all. Everything the pass
   needs falls out of two shifts: `mask ^ (mask >> 1)` marks the cut edges (its
@@ -485,7 +486,8 @@ The standard 256-case marching cubes data, adapted to this project's numbering:
 ## Test volumes
 
 `test_maps.rs` ships hardcoded fields used by the demo and the tests. Remember
-that `> isolevel` is solid, so *setting* a sample fills it in.
+that `> ISO` is solid, so *raising* a sample fills it in. Most maps write their
+samples relative to `ISO`, on an empty background of `ISO - 2`.
 
 - `terrain()` — an 8³ grid with a carved shape.
 - `solid_cube(size)` — a solid cube inset by a one-sample border.
@@ -591,8 +593,7 @@ What's stubbed or in flight:
 - `VoxelTerrainPlugin::build` is commented out — no chunk streaming yet; the app
   meshes one hardcoded volume.
 - `terrain.rs` / `voxel.rs` / `Grid<T>` define a chunked-storage layer that
-  overlaps `VoxelBuffer` and isn't wired into the renderer. `Terrain` holds
-  `Grid<u8>` while everything else is `i8`.
+  overlaps `VoxelBuffer` and isn't wired into the renderer.
 - `octree.rs` and `picking.rs` are empty placeholders.
 - `avian3d` is a declared dependency but unused so far.
 
@@ -600,7 +601,7 @@ What's stubbed or in flight:
 
 ## Notes & gotchas
 
-- **The sign convention is load-bearing.** `<= isolevel` is empty, `> isolevel`
+- **The sign convention is load-bearing.** `<= ISO` is empty, `> ISO`
   is solid. Get it backwards and the mesh is inside-out — and because back-face
   culling then hides it, the symptom is "nothing renders" rather than anything
   that points at the cause. See [Conventions](#conventions-used-in-this-codebase).

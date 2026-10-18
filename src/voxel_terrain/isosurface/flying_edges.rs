@@ -101,10 +101,9 @@ use super::{
 pub fn extract_into(
     scratch: &mut ExtractionScratch,
     buffer: &VoxelBuffer,
-    isolevel: i8,
     interpolate: Interpolate,
 ) -> Surface {
-    let scan = RowScan::new(buffer, isolevel);
+    let scan = RowScan::new(buffer);
 
     if buffer.size() < 2 {
         return Surface::default();
@@ -134,8 +133,8 @@ pub fn extract_into(
 
 /// Extracts with a throwaway pool. Convenient for one-off calls and tests;
 /// prefer [`extract_into`] on any path that runs more than once.
-pub fn extract(buffer: &VoxelBuffer, isolevel: i8, interpolate: Interpolate) -> Surface {
-    extract_into(&mut ExtractionScratch::new(), buffer, isolevel, interpolate)
+pub fn extract(buffer: &VoxelBuffer, interpolate: Interpolate) -> Surface {
+    extract_into(&mut ExtractionScratch::new(), buffer, interpolate)
 }
 
 /// The twelve edge slots a cell is responsible for writing, as a bitmask.
@@ -293,17 +292,10 @@ fn emit(
 
                         let id = ids[slot] as usize;
                         let edge = SLOT_EDGE[slot];
-                        let t = edge_t(edge, &corners, scan.isolevel(), interpolate);
+                        let t = edge_t(edge, &corners, interpolate);
 
                         positions[id].write(place_at(cell, edge, t));
-                        normals[id].write(gradient_normal(
-                            buffer,
-                            (x, y, z),
-                            edge,
-                            &corners,
-                            scan.isolevel(),
-                            t,
-                        ));
+                        normals[id].write(gradient_normal(buffer, (x, y, z), edge, &corners, t));
                     }
                 }
 
@@ -347,11 +339,11 @@ mod tests {
     /// the buffers are sized from them and every slot is filled by index.
     #[test]
     fn the_scan_sizes_the_output_exactly() {
-        let (buffer, isolevel) = test_maps::buffer(test_maps::sphere(16, 5.0));
+        let buffer = test_maps::sphere(16, 5.0);
         let mut scratch = ExtractionScratch::new();
 
-        let counts = RowScan::new(&buffer, isolevel).count(&mut scratch);
-        let surface = extract_into(&mut scratch, &buffer, isolevel, true);
+        let counts = RowScan::new(&buffer).count(&mut scratch);
+        let surface = extract_into(&mut scratch, &buffer, true);
 
         assert_eq!(
             counts,
@@ -379,8 +371,8 @@ mod tests {
             test_maps::flat_slab(6),
             test_maps::solid_cube(5),
         ] {
-            let (buffer, isolevel) = test_maps::buffer(field);
-            let scan = RowScan::new(&buffer, isolevel);
+            let buffer = field;
+            let scan = RowScan::new(&buffer);
 
             let mut scratch = ExtractionScratch::new();
             let counts = scan.count(&mut scratch);
@@ -426,8 +418,8 @@ mod tests {
             test_maps::pseudo_random(12, 0xC0FFEE),
             test_maps::flat_slab(6),
         ] {
-            let (buffer, isolevel) = test_maps::buffer(field);
-            let scan = RowScan::new(&buffer, isolevel);
+            let buffer = field;
+            let scan = RowScan::new(&buffer);
 
             let mut scratch = ExtractionScratch::new();
             let counts = scan.count(&mut scratch);

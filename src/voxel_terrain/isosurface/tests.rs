@@ -13,7 +13,7 @@ use bevy::math::{vec3, Vec3};
 use super::{
     case_index, extract, extract_with, flying_edges, marching_cubes, place_vertex,
     tables::{EDGE_VERTEX_INDICES, TRIANGLE_COUNT, TRIANGLE_TABLE, VERTEX_POSITIONS},
-    test_maps, ExtractionJob, ExtractionScratch, Interpolate, Method, Surface, VoxelBuffer,
+    test_maps, ExtractionJob, ExtractionScratch, Interpolate, Method, Surface, VoxelBuffer, ISO,
     MAX_SIZE,
 };
 
@@ -37,7 +37,7 @@ fn canonical(mut tri: Tri) -> Tri {
 
 /// Marching cubes, written out longhand as the thing to be believed. No
 /// welding, no trimming, no counting passes -- just every cell in turn.
-fn reference(buffer: &VoxelBuffer, isolevel: i8, interpolate: Interpolate) -> Vec<Tri> {
+fn reference(buffer: &VoxelBuffer, interpolate: Interpolate) -> Vec<Tri> {
     let cells = buffer.cells_per_axis();
     let mut out = Vec::new();
 
@@ -45,7 +45,7 @@ fn reference(buffer: &VoxelBuffer, isolevel: i8, interpolate: Interpolate) -> Ve
         for y in 0..cells {
             for x in 0..cells {
                 let corners = buffer.cell_corners(x, y, z);
-                let case = case_index(&corners, isolevel);
+                let case = case_index(&corners);
                 let cell = vec3(x as f32, y as f32, z as f32);
 
                 let mut i = 0;
@@ -53,7 +53,7 @@ fn reference(buffer: &VoxelBuffer, isolevel: i8, interpolate: Interpolate) -> Ve
                     let mut tri: Tri = [[0; 3]; 3];
                     for k in 0..3 {
                         let edge = TRIANGLE_TABLE[case][i + k] as usize;
-                        let v = place_vertex(cell, edge, &corners, isolevel, interpolate);
+                        let v = place_vertex(cell, edge, &corners, interpolate);
                         tri[k] = [quant(v.x), quant(v.y), quant(v.z)];
                     }
                     out.push(canonical(tri));
@@ -141,17 +141,14 @@ fn diff(name: &str, expected: &[Tri], actual: &[Tri]) {
 
 /// Requires both methods, with and without interpolation, to reproduce the
 /// reference exactly.
-fn compare(name: &str, map: (Vec<i8>, i8, usize)) {
-    let (buffer, isolevel) = test_maps::buffer(map);
-
+fn compare(name: &str, buffer: VoxelBuffer) {
     for interpolate in [true, false] {
-        let expected = reference(&buffer, isolevel, interpolate);
+        let expected = reference(&buffer, interpolate);
 
         for method in [Method::FlyingEdges, Method::MarchingCubes] {
             let label = format!("{name} / {method:?} / interpolate={interpolate}");
             let surface = extract(&ExtractionJob {
                 buffer: buffer.clone(),
-                isolevel,
                 method,
                 interpolate,
             });
@@ -227,12 +224,11 @@ fn a_reused_pool_matches_a_fresh_one() {
     let mut scratch = ExtractionScratch::new();
 
     for field in fields {
-        let (buffer, isolevel) = test_maps::buffer(field);
+        let buffer = field;
 
         for method in [Method::FlyingEdges, Method::MarchingCubes] {
             let job = ExtractionJob {
                 buffer: buffer.clone(),
-                isolevel,
                 method,
                 interpolate: true,
             };
@@ -249,13 +245,12 @@ fn a_reused_pool_matches_a_fresh_one() {
 /// must stop calling the allocator altogether.
 #[test]
 fn a_warm_pool_stops_growing() {
-    let (buffer, isolevel) = test_maps::buffer(test_maps::sphere(16, 5.0));
+    let buffer = test_maps::sphere(16, 5.0);
     let mut scratch = ExtractionScratch::new();
 
     for method in [Method::FlyingEdges, Method::MarchingCubes] {
         let job = ExtractionJob {
             buffer: buffer.clone(),
-            isolevel,
             method,
             interpolate: true,
         };
@@ -280,7 +275,6 @@ fn empty_field_yields_an_empty_surface() {
     for method in [Method::FlyingEdges, Method::MarchingCubes] {
         let surface = extract(&ExtractionJob {
             buffer: buffer.clone(),
-            isolevel: 2,
             method,
             interpolate: true,
         });
@@ -295,7 +289,6 @@ fn a_buffer_too_small_to_hold_a_cell_is_handled() {
         for method in [Method::FlyingEdges, Method::MarchingCubes] {
             let surface = extract(&ExtractionJob {
                 buffer: VoxelBuffer::new(size),
-                isolevel: 2,
                 method,
                 interpolate: true,
             });
@@ -306,11 +299,10 @@ fn a_buffer_too_small_to_hold_a_cell_is_handled() {
 
 #[test]
 fn interpolation_moves_vertices_but_not_topology() {
-    let (buffer, isolevel) = test_maps::buffer(test_maps::sphere(16, 5.0));
+    let buffer = test_maps::sphere(16, 5.0);
 
     let job = |interpolate| ExtractionJob {
         buffer: buffer.clone(),
-        isolevel,
         method: Method::FlyingEdges,
         interpolate,
     };
@@ -329,19 +321,18 @@ fn interpolation_moves_vertices_but_not_topology() {
 #[test]
 fn winding_faces_away_from_the_solid() {
     // TRIANGLE_TABLE winds each triangle so its normal points toward the
-    // corners whose case bit is set, and the bit is set for `<= isolevel`. So
-    // `<= isolevel` has to be empty space for normals to point out of the
+    // corners whose case bit is set, and the bit is set for `<= ISO`. So
+    // `<= ISO` has to be empty space for normals to point out of the
     // solid, which is what wgpu's default Ccw / cull-Back and
     // StandardMaterial's lighting expect. Feed in the opposite sense and the
     // whole mesh is inside-out.
     let size = 24;
-    let (buffer, isolevel) = test_maps::buffer(test_maps::sphere(size, 8.0));
+    let buffer = test_maps::sphere(size, 8.0);
     let centre = Vec3::splat((size as f32 - 1.0) / 2.0);
 
     for method in [Method::FlyingEdges, Method::MarchingCubes] {
         let surface = extract(&ExtractionJob {
             buffer: buffer.clone(),
-            isolevel,
             method,
             interpolate: true,
         });
@@ -375,8 +366,8 @@ fn winding_faces_away_from_the_solid() {
     }
 }
 
-/// A test map as `test_maps` hands them out: samples, isolevel, size.
-type Field = (Vec<i8>, i8, usize);
+/// A test map as `test_maps` hands them out.
+type Field = VoxelBuffer;
 
 /// Every field the normal tests run over: tidy ones, dense noise full of
 /// degenerate triangles, and a size-2 field that is all boundary.
@@ -389,7 +380,7 @@ fn normal_fields() -> Vec<(&'static str, Field)> {
         ("scattered", test_maps::scattered()),
         ("flat_slab", test_maps::flat_slab(6)),
         ("pseudo_random", test_maps::pseudo_random(12, 0xC0FFEE)),
-        ("size_2", (vec![0, 5, 0, 0, 5, 5, 0, 5], 2, 2)),
+        ("size_2", size_2()),
         ("gradient_tie", gradient_tie()),
     ]
 }
@@ -398,26 +389,32 @@ fn normal_fields() -> Vec<(&'static str, Field)> {
 /// either side of one sitting exactly on the isolevel, so both edges into it
 /// put a vertex on that sample, where the gradient is zero.
 fn gradient_tie() -> Field {
-    let size = 5;
-    let mut map = vec![0i8; size * size * size];
-    let at = |x: usize, y: usize, z: usize| x + y * size + z * size * size;
-    map[at(1, 2, 2)] = 5;
-    map[at(3, 2, 2)] = 5;
-    map[at(2, 2, 2)] = 2;
-    (map, 2, size)
+    let mut buffer = test_maps::filled(5, ISO - 2);
+    buffer.set(1, 2, 2, ISO + 3);
+    buffer.set(3, 2, 2, ISO + 3);
+    buffer.set(2, 2, 2, ISO);
+    buffer
+}
+
+/// A single cell, so every corner is on the boundary.
+fn size_2() -> Field {
+    let (empty, solid) = (ISO - 2, ISO + 3);
+    VoxelBuffer::from_samples(
+        vec![empty, solid, empty, empty, solid, solid, empty, solid],
+        2,
+    )
 }
 
 #[test]
 fn normals_are_unit_and_finite() {
     for (name, field) in normal_fields() {
-        let (buffer, isolevel) = test_maps::buffer(field);
+        let buffer = field;
 
         for interpolate in [true, false] {
             for method in [Method::FlyingEdges, Method::MarchingCubes] {
                 let label = format!("{name} / {method:?} / interpolate={interpolate}");
                 let surface = extract(&ExtractionJob {
                     buffer: buffer.clone(),
-                    isolevel,
                     method,
                     interpolate,
                 });
@@ -441,13 +438,12 @@ fn normals_are_unit_and_finite() {
 #[test]
 fn vertex_normals_point_away_from_the_solid() {
     let size = 24;
-    let (buffer, isolevel) = test_maps::buffer(test_maps::sphere(size, 8.0));
+    let buffer = test_maps::sphere(size, 8.0);
     let centre = Vec3::splat((size as f32 - 1.0) / 2.0);
 
     for method in [Method::FlyingEdges, Method::MarchingCubes] {
         let surface = extract(&ExtractionJob {
             buffer: buffer.clone(),
-            isolevel,
             method,
             interpolate: true,
         });
@@ -475,8 +471,8 @@ fn gradient_normals_agree_with_their_faces() {
         ("solid_cube", test_maps::solid_cube(8)),
         ("flat_slab", test_maps::flat_slab(6)),
     ] {
-        let (buffer, isolevel) = test_maps::buffer(field);
-        let surface = flying_edges::extract(&buffer, isolevel, true);
+        let buffer = field;
+        let surface = flying_edges::extract(&buffer, true);
 
         let mut disagreeing = 0;
         for t in surface.indices.chunks(3) {
@@ -499,8 +495,8 @@ fn gradient_normals_agree_with_their_faces() {
 /// on a column that reaches those faces -- and its normal is exactly up.
 #[test]
 fn a_slab_has_exactly_vertical_normals() {
-    let (buffer, isolevel) = test_maps::buffer(test_maps::flat_slab(6));
-    let surface = flying_edges::extract(&buffer, isolevel, true);
+    let buffer = test_maps::flat_slab(6);
+    let surface = flying_edges::extract(&buffer, true);
 
     assert!(!surface.normals.is_empty());
     for n in &surface.normals {
@@ -512,8 +508,8 @@ fn a_slab_has_exactly_vertical_normals() {
 /// from the solid end to the empty end -- never to NaN.
 #[test]
 fn a_cancelled_gradient_falls_back_to_the_edge() {
-    let (buffer, isolevel) = test_maps::buffer(gradient_tie());
-    let surface = flying_edges::extract(&buffer, isolevel, true);
+    let buffer = gradient_tie();
+    let surface = flying_edges::extract(&buffer, true);
 
     let mut at_tie: Vec<Vec3> = surface
         .positions
@@ -533,8 +529,8 @@ fn a_cancelled_gradient_falls_back_to_the_edge() {
 #[test]
 fn marching_cubes_normals_are_face_normals() {
     for (name, field) in normal_fields() {
-        let (buffer, isolevel) = test_maps::buffer(field);
-        let surface = marching_cubes::extract(&buffer, isolevel, true);
+        let buffer = field;
+        let surface = marching_cubes::extract(&buffer, true);
 
         for (i, t) in surface.indices.chunks(3).enumerate() {
             let [a, b, c] = [0, 1, 2].map(|k| surface.positions[t[k] as usize]);
@@ -552,7 +548,7 @@ fn marching_cubes_normals_are_face_normals() {
 /// reuse `t` for the gradient; the split must not move a single vertex.
 #[test]
 fn place_at_lands_where_the_longhand_formula_does() {
-    let (buffer, isolevel) = test_maps::buffer(test_maps::pseudo_random(8, 0xABCD));
+    let buffer = test_maps::pseudo_random(8, 0xABCD);
     let cells = buffer.cells_per_axis();
 
     for z in 0..cells {
@@ -562,16 +558,17 @@ fn place_at_lands_where_the_longhand_formula_does() {
                 let cell = vec3(x as f32, y as f32, z as f32);
 
                 for (edge, &(a, b)) in EDGE_VERTEX_INDICES.iter().enumerate() {
-                    if (corners[a] <= isolevel) == (corners[b] <= isolevel) {
+                    if (corners[a] <= ISO) == (corners[b] <= ISO) {
                         continue;
                     }
                     let (start, end) = (VERTEX_POSITIONS[a], VERTEX_POSITIONS[b]);
                     let (from, to) = (corners[a] as f32, corners[b] as f32);
-                    let longhand = cell + (start + (isolevel as f32 - from) * (end - start) / (to - from));
+                    let longhand =
+                        cell + (start + (ISO as f32 - from) * (end - start) / (to - from));
 
-                    assert_eq!(place_vertex(cell, edge, &corners, isolevel, true), longhand);
+                    assert_eq!(place_vertex(cell, edge, &corners, true), longhand);
                     assert_eq!(
-                        place_vertex(cell, edge, &corners, isolevel, false),
+                        place_vertex(cell, edge, &corners, false),
                         cell + (start + end) / 2.0,
                     );
                 }
@@ -639,16 +636,16 @@ mod passes {
 
     #[test]
     fn passes_run_over_the_terrain_field() {
-        let (buffer, isolevel) = test_maps::buffer(test_maps::terrain());
-        let surface = flying_edges::extract(&buffer, isolevel, true);
+        let buffer = test_maps::terrain();
+        let surface = flying_edges::extract(&buffer, true);
         assert!(surface.triangle_count() > 0);
     }
 
     #[test]
     fn both_methods_agree_on_the_triangle_count() {
-        let (buffer, isolevel) = test_maps::buffer(test_maps::terrain());
-        let fe = flying_edges::extract(&buffer, isolevel, true);
-        let mc = marching_cubes::extract(&buffer, isolevel, true);
+        let buffer = test_maps::terrain();
+        let fe = flying_edges::extract(&buffer, true);
+        let mc = marching_cubes::extract(&buffer, true);
 
         assert_eq!(fe.triangle_count(), mc.triangle_count(), "triangle count");
         // The vertex counts are *supposed* to differ: only flying edges welds.
@@ -677,9 +674,9 @@ mod passes {
             test_maps::sphere(16, 5.0),
             test_maps::pseudo_random(8, 0x5EED),
         ] {
-            let (buffer, isolevel) = test_maps::buffer(field);
-            let fe = flying_edges::extract(&buffer, isolevel, false);
-            let mc = marching_cubes::extract(&buffer, isolevel, false);
+            let buffer = field;
+            let fe = flying_edges::extract(&buffer, false);
+            let mc = marching_cubes::extract(&buffer, false);
 
             let mut distinct: Vec<[i32; 3]> = mc
                 .positions

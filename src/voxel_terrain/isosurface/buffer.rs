@@ -7,16 +7,20 @@
 /// incidental -- [`VoxelBuffer::row`] handing back a plain slice is what keeps
 /// its first pass cache friendly.
 ///
-/// A sample of `<= isolevel` is empty space and `> isolevel` is solid; see the
-/// module docs for why that direction is forced by the triangle table.
+/// Samples run `0..=`[`S_MAX`]. A sample of `<= `[`ISO`] is empty space and
+/// `> ISO` is solid; see the module docs for why that direction is forced by
+/// the triangle table.
+///
+/// [`S_MAX`]: super::S_MAX
+/// [`ISO`]: super::ISO
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VoxelBuffer {
-    samples: Vec<i8>,
+    samples: Vec<u8>,
     size: usize,
 }
 
 impl VoxelBuffer {
-    /// An all-zero buffer `size` samples along each axis.
+    /// An all-empty buffer `size` samples along each axis.
     pub fn new(size: usize) -> Self {
         VoxelBuffer {
             samples: vec![0; size.pow(3)],
@@ -28,7 +32,7 @@ impl VoxelBuffer {
     ///
     /// # Panics
     /// If `samples.len()` is not `size.pow(3)`.
-    pub fn from_samples(samples: Vec<i8>, size: usize) -> Self {
+    pub fn from_samples(samples: Vec<u8>, size: usize) -> Self {
         assert_eq!(
             samples.len(),
             size.pow(3),
@@ -50,11 +54,11 @@ impl VoxelBuffer {
         self.size.saturating_sub(1)
     }
 
-    pub fn samples(&self) -> &[i8] {
+    pub fn samples(&self) -> &[u8] {
         &self.samples
     }
 
-    pub fn samples_mut(&mut self) -> &mut [i8] {
+    pub fn samples_mut(&mut self) -> &mut [u8] {
         &mut self.samples
     }
 
@@ -63,17 +67,17 @@ impl VoxelBuffer {
         x + y * self.size + z * self.size * self.size
     }
 
-    pub fn get(&self, x: usize, y: usize, z: usize) -> i8 {
+    pub fn get(&self, x: usize, y: usize, z: usize) -> u8 {
         self.samples[self.index(x, y, z)]
     }
 
-    pub fn set(&mut self, x: usize, y: usize, z: usize, value: i8) {
+    pub fn set(&mut self, x: usize, y: usize, z: usize, value: u8) {
         let index = self.index(x, y, z);
         self.samples[index] = value;
     }
 
     /// The contiguous run of `size` samples along X at `(y, z)`.
-    pub fn row(&self, y: usize, z: usize) -> &[i8] {
+    pub fn row(&self, y: usize, z: usize) -> &[u8] {
         let start = self.index(0, y, z);
         &self.samples[start..start + self.size]
     }
@@ -83,7 +87,7 @@ impl VoxelBuffer {
     /// `x + (i & 1)`, `y + ((i >> 1) & 1)`, `z + ((i >> 2) & 1)`.
     ///
     /// That order is what the triangle tables index by, so it must not change.
-    pub fn cell_corners(&self, x: usize, y: usize, z: usize) -> [i8; 8] {
+    pub fn cell_corners(&self, x: usize, y: usize, z: usize) -> [u8; 8] {
         [
             self.get(x, y, z),
             self.get(x + 1, y, z),
@@ -106,7 +110,7 @@ mod tests {
         let size = 4;
         let mut buffer = VoxelBuffer::new(size);
         for x in 0..size {
-            buffer.set(x, 2, 3, x as i8);
+            buffer.set(x, 2, 3, x as u8);
         }
         assert_eq!(buffer.row(2, 3), &[0, 1, 2, 3]);
     }
@@ -118,7 +122,7 @@ mod tests {
         // Store each corner's own index, so the returned array should come
         // back as 0..8 exactly when the ordering is right.
         for i in 0..8usize {
-            buffer.set(i & 1, (i >> 1) & 1, (i >> 2) & 1, i as i8);
+            buffer.set(i & 1, (i >> 1) & 1, (i >> 2) & 1, i as u8);
         }
         assert_eq!(buffer.cell_corners(0, 0, 0), [0, 1, 2, 3, 4, 5, 6, 7]);
     }

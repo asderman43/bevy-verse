@@ -9,12 +9,13 @@ use bevy::{
 
 use super::{
     test_maps, ExtractSet, ExtractionJob, IsosurfaceQueue, IsosurfaceResults, Method, VoxelBuffer,
+    ISO,
 };
 use crate::voxel_terrain::util::XYZ;
 
-/// Which field the demo shows, and at what isolevel.
-fn demo_field() -> (VoxelBuffer, i8) {
-    test_maps::buffer(test_maps::solid_cube(4))
+/// Which field the demo shows.
+fn demo_field() -> VoxelBuffer {
+    test_maps::solid_cube(4)
 }
 
 /// Spawns the demo scene. Expects [`super::IsosurfacePlugin`] to be added too.
@@ -31,12 +32,11 @@ impl Plugin for IsosurfaceDebugPlugin {
 
 /// Queues the demo field through both methods, so they can be compared.
 fn queue_demo_surfaces(mut queue: ResMut<IsosurfaceQueue>) {
-    let (buffer, isolevel) = demo_field();
+    let buffer = demo_field();
 
     for method in [Method::FlyingEdges, Method::MarchingCubes] {
         queue.push(ExtractionJob {
             buffer: buffer.clone(),
-            isolevel,
             method,
             interpolate: true,
         });
@@ -54,7 +54,7 @@ fn spawn_extracted_surfaces(
         return;
     }
 
-    let spacing = demo_field().0.size() as f32 + 2.0;
+    let spacing = demo_field().size() as f32 + 2.0;
 
     for result in results.drain() {
         let (offset, colour) = match result.method {
@@ -84,7 +84,7 @@ fn spawn_extracted_surfaces(
 /// Draws the sample grid: the field's bounds, the axes, and a sphere per
 /// sample coloured by whether it is solid.
 fn draw_sample_gizmos(mut gizmo_assets: ResMut<Assets<GizmoAsset>>, mut commands: Commands) {
-    let (buffer, isolevel) = demo_field();
+    let buffer = demo_field();
     let size = buffer.size();
 
     let mut gizmo = GizmoAsset::new();
@@ -99,8 +99,8 @@ fn draw_sample_gizmos(mut gizmo_assets: ResMut<Assets<GizmoAsset>>, mut commands
     gizmo.arrow(origin, origin + Vec3::Z, BLUE);
 
     for (x, y, z) in XYZ::new(size) {
-        // `> isolevel` is solid; see the module docs.
-        let solid = buffer.get(x, y, z) > isolevel;
+        // `> ISO` is solid; see the module docs.
+        let solid = buffer.get(x, y, z) > ISO;
         let colour = if solid { GREEN } else { RED };
         gizmo.sphere(vec3(x as f32, y as f32, z as f32), 0.1, colour);
     }

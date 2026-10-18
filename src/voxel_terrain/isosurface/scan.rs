@@ -20,7 +20,7 @@
 //! # Row bitmasks
 //!
 //! Pass 1 classifies a row of samples into a single `u64`: bit `x` is set when
-//! sample `x` is `<= isolevel`. A chunk is at most [`MAX_SIZE`] samples along
+//! sample `x` is `<= ISO`. A chunk is at most [`MAX_SIZE`] samples along
 //! an axis, so a row always fits in one word.
 //!
 //! That is a smaller buffer than a byte per edge -- `size * size` words against
@@ -34,7 +34,7 @@
 use super::{
     scratch::ExtractionScratch,
     tables::{EDGE_INTERSECTION, TRIANGLE_COUNT},
-    VoxelBuffer, MAX_SIZE,
+    VoxelBuffer, ISO, MAX_SIZE, S_MAX,
 };
 
 /// What passes 1 and 2 work out about a single row of X edges at some `(y, z)`.
@@ -148,29 +148,28 @@ fn low_bits(n: usize) -> u64 {
 /// The counting half of extraction, over one field.
 pub struct RowScan<'a> {
     buffer: &'a VoxelBuffer,
-    isolevel: i8,
 }
 
 impl<'a> RowScan<'a> {
     /// # Panics
     /// If `buffer.size()` exceeds [`MAX_SIZE`]; a row of corners has to fit in
-    /// a `u64`.
-    pub fn new(buffer: &'a VoxelBuffer, isolevel: i8) -> Self {
+    /// a `u64`. In debug builds, also if any sample exceeds [`S_MAX`].
+    pub fn new(buffer: &'a VoxelBuffer) -> Self {
         assert!(
             buffer.size() <= MAX_SIZE,
             "a row of corners is packed into a u64, so a chunk can be at most \
              {MAX_SIZE} samples per axis, got {}",
             buffer.size(),
         );
-        RowScan { buffer, isolevel }
+        debug_assert!(
+            buffer.samples().iter().all(|&s| s <= S_MAX),
+            "samples run 0..={S_MAX}",
+        );
+        RowScan { buffer }
     }
 
     pub fn buffer(&self) -> &VoxelBuffer {
         self.buffer
-    }
-
-    pub fn isolevel(&self) -> i8 {
-        self.isolevel
     }
 
     /// Runs all three passes, counting vertices as well as triangles, and
@@ -224,7 +223,7 @@ impl<'a> RowScan<'a> {
     /// and X-vertex count.
     ///
     /// A row becomes one `u64` with bit `x` set when sample `x` is
-    /// `<= isolevel`, which makes everything else a bit operation on the whole
+    /// `<= ISO`, which makes everything else a bit operation on the whole
     /// row at once. Shifting it down by one lines each edge's high corner up
     /// with its low corner, so against `mask`:
     ///
@@ -249,7 +248,7 @@ impl<'a> RowScan<'a> {
 
                 let mut mask = 0u64;
                 for (x, &sample) in samples.iter().enumerate() {
-                    mask |= ((sample <= self.isolevel) as u64) << x;
+                    mask |= ((sample <= ISO) as u64) << x;
                 }
 
                 // Only an edge whose corners disagree produces a vertex.
@@ -423,12 +422,12 @@ mod tests {
     fn pass_1_packs_a_row_into_its_bits() {
         let size = 8;
         let mut buffer = VoxelBuffer::new(size);
-        // Samples default to 0, which is `<= isolevel`, i.e. empty. Make
+        // Samples default to 0, which is `<= ISO`, i.e. empty. Make
         // x = 2 and x = 5 of row (1, 3) solid.
-        buffer.set(2, 1, 3, 5);
-        buffer.set(5, 1, 3, 5);
+        buffer.set(2, 1, 3, S_MAX);
+        buffer.set(5, 1, 3, S_MAX);
 
-        let scan = RowScan::new(&buffer, 0);
+        let scan = RowScan::new(&buffer);
         let mut masks = vec![0u64; size * size];
         let mut rows = vec![RowMetadata::default(); size * size];
         scan.pass_1(&mut masks, &mut rows);
@@ -458,10 +457,10 @@ mod tests {
         let size = 6;
         let mut buffer = VoxelBuffer::new(size);
         for (x, y, z) in crate::voxel_terrain::util::XYZ::new(size) {
-            buffer.set(x, y, z, 9);
+            buffer.set(x, y, z, S_MAX);
         }
 
-        let scan = RowScan::new(&buffer, 0);
+        let scan = RowScan::new(&buffer);
         let mut masks = vec![0u64; size * size];
         let mut rows = vec![RowMetadata::default(); size * size];
         scan.pass_1(&mut masks, &mut rows);
@@ -487,8 +486,7 @@ mod tests {
             test_maps::pseudo_random(10, 0xBEEF),
             test_maps::flat_slab(6),
         ] {
-            let (buffer, isolevel) = test_maps::buffer(field);
-            let scan = RowScan::new(&buffer, isolevel);
+            let scan = RowScan::new(&field);
 
             let mut scratch = ExtractionScratch::new();
             let full = scan.count(&mut scratch);
@@ -503,6 +501,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "at most 64 samples per axis")]
     fn a_chunk_over_the_size_limit_is_rejected() {
-        RowScan::new(&VoxelBuffer::new(MAX_SIZE + 1), 2);
+        RowScan::new(&VoxelBuffer::new(MAX_SIZE + 1));
     }
 }

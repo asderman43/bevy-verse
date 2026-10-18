@@ -2,11 +2,12 @@
 //!
 //! # Sign convention
 //!
-//! A sample of `<= isolevel` is **empty space**; `> isolevel` is **solid**.
+//! Samples are `u8` in `0..=`[`S_MAX`]. A sample of `<= ISO` is **empty
+//! space**; `> ISO` is **solid** (see [`ISO`]).
 //!
 //! That is not arbitrary. [`tables::TRIANGLE_TABLE`] winds each triangle so its
 //! normal points toward the corners whose case bit is set, and the case bit is
-//! set for `<= isolevel`. Feeding in a field with the opposite sense produces a
+//! set for `<= ISO`. Feeding in a field with the opposite sense produces a
 //! mesh that is uniformly inside-out: invisible under back-face culling, and
 //! lit from within. `winding_faces_away_from_the_solid` in `tests.rs` pins this
 //! down.
@@ -22,7 +23,6 @@
 //! fn request(mut queue: ResMut<IsosurfaceQueue>) {
 //!     queue.push(ExtractionJob {
 //!         buffer: VoxelBuffer::new(32),
-//!         isolevel: 2,
 //!         method: Method::FlyingEdges,
 //!         interpolate: true,
 //!     });
@@ -87,6 +87,18 @@ use tables::{EDGE_VERTEX_INDICES, VERTEX_POSITIONS};
 /// operations; see the `flying_edges` module docs.
 pub const MAX_SIZE: usize = 64;
 
+/// The largest value a sample holds: samples run from 0, fully empty, to
+/// `S_MAX`, fully solid.
+///
+/// The terrain mesher never reads it -- classification and placement need only
+/// [`ISO`] -- but everything that writes samples, and the water that shares
+/// them, works on this scale.
+pub const S_MAX: u8 = 15;
+
+/// The terrain isolevel: a sample is solid when `> ISO` and empty when
+/// `<= ISO`. Vertices are interpolated to where the field reaches `ISO`.
+pub const ISO: u8 = 7;
+
 /// Which algorithm to extract with.
 ///
 /// Both produce the same triangles, in the same places, for the same input.
@@ -123,7 +135,7 @@ pub enum Method {
 
 /// Where along a cut edge to put the vertex.
 ///
-/// `true` places it where the field actually crosses the isolevel; `false`
+/// `true` places it where the field actually crosses [`ISO`]; `false`
 /// puts it at the edge midpoint, which gives the blocky look and skips a
 /// divide per vertex.
 pub type Interpolate = bool;
@@ -132,7 +144,6 @@ pub type Interpolate = bool;
 #[derive(Clone, Debug)]
 pub struct ExtractionJob {
     pub buffer: VoxelBuffer,
-    pub isolevel: i8,
     pub method: Method,
     pub interpolate: Interpolate,
 }
@@ -253,11 +264,9 @@ impl Surface {
 /// server, no globals -- the pool is the only state, and it is the caller's.
 pub fn extract_with(scratch: &mut ExtractionScratch, job: &ExtractionJob) -> Surface {
     match job.method {
-        Method::FlyingEdges => {
-            flying_edges::extract_into(scratch, &job.buffer, job.isolevel, job.interpolate)
-        }
+        Method::FlyingEdges => flying_edges::extract_into(scratch, &job.buffer, job.interpolate),
         Method::MarchingCubes => {
-            marching_cubes::extract_into(scratch, &job.buffer, job.isolevel, job.interpolate)
+            marching_cubes::extract_into(scratch, &job.buffer, job.interpolate)
         }
     }
 }
@@ -272,11 +281,11 @@ pub fn extract(job: &ExtractionJob) -> Surface {
 }
 
 /// Marching-cubes case index for a cell: bit `i` is set when corner `i` is
-/// `<= isolevel`, i.e. empty. Cases 0 and 255 are uniform and emit nothing.
-pub(crate) fn case_index(corners: &[i8; 8], isolevel: i8) -> usize {
+/// `<= ISO`, i.e. empty. Cases 0 and 255 are uniform and emit nothing.
+pub(crate) fn case_index(corners: &[u8; 8]) -> usize {
     let mut case = 0;
     for (i, &corner) in corners.iter().enumerate() {
-        if corner <= isolevel {
+        if corner <= ISO {
             case |= 1 << i;
         }
     }
@@ -290,11 +299,10 @@ pub(crate) fn case_index(corners: &[i8; 8], isolevel: i8) -> usize {
 pub(crate) fn place_vertex(
     cell: Vec3,
     edge: usize,
-    corners: &[i8; 8],
-    isolevel: i8,
+    corners: &[u8; 8],
     interpolate: Interpolate,
 ) -> Vec3 {
-    place_at(cell, edge, edge_t(edge, corners, isolevel, interpolate))
+    place_at(cell, edge, edge_t(edge, corners, interpolate))
 }
 
 /// How far along `edge` the surface crosses it: 0 at the edge's first corner
@@ -302,7 +310,7 @@ pub(crate) fn place_vertex(
 ///
 /// Split out of [`place_vertex`] because the gradient normal is blended along
 /// the edge by the same amount, and working it out twice is a second divide.
-pub(crate) fn edge_t(edge: usize, corners: &[i8; 8], isolevel: i8, interpolate: Interpolate) -> f32 {
+pub(crate) fn edge_t(edge: usize, corners: &[u8; 8], interpolate: Interpolate) -> f32 {
     if !interpolate {
         return 0.5;
     }
@@ -311,7 +319,7 @@ pub(crate) fn edge_t(edge: usize, corners: &[i8; 8], isolevel: i8, interpolate: 
     let (from, to) = (corners[a] as f32, corners[b] as f32);
     // Only ever called for an edge the surface crosses, so the corner values
     // straddle the isolevel and `to - from` cannot be zero.
-    (isolevel as f32 - from) / (to - from)
+    (ISO as f32 - from) / (to - from)
 }
 
 /// The point `t` of the way along `edge` of the cell whose lowest corner is
@@ -319,7 +327,7 @@ pub(crate) fn edge_t(edge: usize, corners: &[i8; 8], isolevel: i8, interpolate: 
 ///
 /// Every component of `end - start` is -1, 0 or 1, so `t * (end - start)` is
 /// exact, and this lands on bit for bit the same point the longhand
-/// `start + (isolevel - from) * (end - start) / (to - from)` does.
+/// `start + (ISO - from) * (end - start) / (to - from)` does.
 pub(crate) fn place_at(cell: Vec3, edge: usize, t: f32) -> Vec3 {
     let (a, b) = EDGE_VERTEX_INDICES[edge];
     let (start, end) = (VERTEX_POSITIONS[a], VERTEX_POSITIONS[b]);
@@ -338,8 +346,7 @@ pub(crate) fn gradient_normal(
     buffer: &VoxelBuffer,
     (x, y, z): (usize, usize, usize),
     edge: usize,
-    corners: &[i8; 8],
-    isolevel: i8,
+    corners: &[u8; 8],
     t: f32,
 ) -> Vec3 {
     let (a, b) = EDGE_VERTEX_INDICES[edge];
@@ -348,7 +355,7 @@ pub(crate) fn gradient_normal(
     let gradient = at_corner(a).lerp(at_corner(b), t);
     (-gradient)
         .try_normalize()
-        .unwrap_or_else(|| edge_fallback(edge, corners, isolevel))
+        .unwrap_or_else(|| edge_fallback(edge, corners))
 }
 
 /// The density gradient at a sample: central differences inside the buffer,
@@ -381,10 +388,10 @@ fn sample_gradient(buffer: &VoxelBuffer, x: usize, y: usize, z: usize) -> Vec3 {
 /// A normal for a vertex with no better one: the direction along its edge from
 /// the solid end to the empty end. Axis-aligned, so already unit length, and
 /// always out of the solid.
-pub(crate) fn edge_fallback(edge: usize, corners: &[i8; 8], isolevel: i8) -> Vec3 {
+pub(crate) fn edge_fallback(edge: usize, corners: &[u8; 8]) -> Vec3 {
     let (a, b) = EDGE_VERTEX_INDICES[edge];
     let along = VERTEX_POSITIONS[b] - VERTEX_POSITIONS[a];
-    if corners[a] > isolevel {
+    if corners[a] > ISO {
         along
     } else {
         -along

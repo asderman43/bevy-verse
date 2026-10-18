@@ -86,10 +86,9 @@ fn time(job: &ExtractionJob, pooled: bool, runs: usize) -> Timing {
     }
 }
 
-fn bench(name: &str, field: (Vec<i8>, i8, usize)) {
-    let size = field.2;
+fn bench(name: &str, buffer: VoxelBuffer) {
+    let size = buffer.size();
     let runs = runs_for(size);
-    let (buffer, isolevel) = test_maps::buffer(field);
 
     println!("\n{name}  ({size}^3, {} cells, {runs} runs)", cells(&buffer));
     println!(
@@ -100,7 +99,6 @@ fn bench(name: &str, field: (Vec<i8>, i8, usize)) {
     for method in [Method::FlyingEdges, Method::MarchingCubes] {
         let job = ExtractionJob {
             buffer: buffer.clone(),
-            isolevel,
             method,
             interpolate: true,
         };

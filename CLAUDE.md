@@ -30,8 +30,8 @@ Everything that matters lives in `src/voxel_terrain/isosurface/`. The rest of `v
 
 ## Conventions and traps
 
-- **Sign convention:** a sample is solid when `> isolevel` and empty when `<= isolevel`; a case bit is set for an *empty* corner. The triangle-table winding forces this. Get it backwards and the mesh renders inside-out, which under back-face culling looks like nothing rendering at all.
-- Samples are `i8` (`VoxelBuffer`), and the isolevel is a per-job parameter. `Terrain` uses `Grid<u8>`, which doesn't match.
+- **Sign convention:** a sample is solid when `> ISO` and empty when `<= ISO`; a case bit is set for an *empty* corner. The triangle-table winding forces this. Get it backwards and the mesh renders inside-out, which under back-face culling looks like nothing rendering at all.
+- Samples are `u8` in `0..=S_MAX` (`VoxelBuffer`). `S_MAX = 15` and `ISO = 7` are constants in `isosurface/mod.rs`, not per-job or config values; keep it that way. Water `w` will get its own buffer, not be interleaved with `s`.
 - **Corner index:** `i` = x bit 0, y bit 1, z bit 2 (`VERTEX_POSITIONS`). Trust `EDGE_VERTEX_INDICES` for edge numbering. The **first** ASCII diagram at the top of `tables.rs` is stale and gives wrong edge numbers. In the real table, vertical edges are 1, 3, 5, 7 and edges 8–11 run along z. Tables written for Bourke's layout can't be reused unremapped.
 - On ambiguous faces, the triangle table keeps empty corners apart, so solid joins diagonally (see `docs/transvoxel-face-ambiguity.md`). Anything that walks face contours has to use the same rule.
 - `isosurface/tests.rs` cross-validates every (method, interpolate) combination against a longhand reference marching cubes. Extend it whenever extraction logic changes.

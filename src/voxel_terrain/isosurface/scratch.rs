@@ -35,7 +35,7 @@ use super::scan::{RowMetadata, RowOffsets};
 #[derive(Resource, Default, Debug)]
 pub struct ExtractionScratch {
     /// Scan, pass 1: one bitmask per sample row `(y, z)`, bit `x` set when
-    /// sample `x` is `<= isolevel`. Indexed the same as [`Self::rows`].
+    /// sample `x` is `<= ISO`. Indexed the same as [`Self::rows`].
     pub(crate) corner_masks: Vec<u64>,
     /// Scan, passes 1-2: per-row trim bounds and counts.
     pub(crate) rows: Vec<RowMetadata>,

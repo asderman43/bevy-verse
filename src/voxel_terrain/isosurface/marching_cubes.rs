@@ -52,10 +52,9 @@ use super::{
 pub fn extract_into(
     scratch: &mut ExtractionScratch,
     buffer: &VoxelBuffer,
-    isolevel: i8,
     interpolate: Interpolate,
 ) -> Surface {
-    let scan = RowScan::new(buffer, isolevel);
+    let scan = RowScan::new(buffer);
 
     if buffer.size() < 2 {
         return Surface::default();
@@ -87,8 +86,8 @@ pub fn extract_into(
 
 /// Extracts with a throwaway pool. Convenient for one-off calls and tests;
 /// prefer [`extract_into`] on any path that runs more than once.
-pub fn extract(buffer: &VoxelBuffer, isolevel: i8, interpolate: Interpolate) -> Surface {
-    extract_into(&mut ExtractionScratch::new(), buffer, isolevel, interpolate)
+pub fn extract(buffer: &VoxelBuffer, interpolate: Interpolate) -> Surface {
+    extract_into(&mut ExtractionScratch::new(), buffer, interpolate)
 }
 
 /// Emission: three fresh vertices per triangle, straight into the slots the
@@ -141,16 +140,15 @@ fn emit(
                 for first in (0..listed).step_by(3) {
                     let place = |k: usize| {
                         let edge = edges[first + k] as usize;
-                        place_vertex(cell, edge, &corners, scan.isolevel(), interpolate)
+                        place_vertex(cell, edge, &corners, interpolate)
                     };
                     let (a, b, c) = (place(0), place(1), place(2));
 
                     // A zero-area triangle -- a sample sitting exactly on the
                     // isolevel -- has no face normal. It is invisible, so any
                     // unit normal will do; the edge's own direction is one.
-                    let normal = face_normal(a, b, c).unwrap_or_else(|| {
-                        edge_fallback(edges[first] as usize, &corners, scan.isolevel())
-                    });
+                    let normal = face_normal(a, b, c)
+                        .unwrap_or_else(|| edge_fallback(edges[first] as usize, &corners));
 
                     positions[cursor].write(a);
                     positions[cursor + 1].write(b);
@@ -177,8 +175,7 @@ mod tests {
     /// identity. Anything else means a row wrote outside its own span.
     #[test]
     fn every_triangle_gets_its_own_vertices() {
-        let (buffer, isolevel) = test_maps::buffer(test_maps::sphere(16, 5.0));
-        let surface = extract(&buffer, isolevel, true);
+        let surface = extract(&test_maps::sphere(16, 5.0), true);
 
         assert_eq!(surface.positions.len(), surface.indices.len());
         assert!(
@@ -194,8 +191,7 @@ mod tests {
     fn empty_rows_emit_nothing() {
         // A slab fills the lower half, so every row of cells above it is
         // uniformly empty and every row below is uniformly solid.
-        let (buffer, isolevel) = test_maps::buffer(test_maps::flat_slab(8));
-        let surface = extract(&buffer, isolevel, false);
+        let surface = extract(&test_maps::flat_slab(8), false);
 
         // The only surface is the single horizontal sheet at the slab's top.
         let ys: Vec<i32> = surface.positions.iter().map(|v| (v.y * 2.0) as i32).collect();
