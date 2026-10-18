@@ -1,7 +1,9 @@
 # Water surface meshing
 
 *Design. Nothing here is implemented yet. Rewritten 2026-10-13 from the original
-proposal to fit this codebase's conventions, tables and configuration.*
+proposal to fit this codebase's conventions, tables and configuration. Updated
+2026-10-19 (§1.2): rock below the isolevel is ignored, and a solid point holds
+the water standing under it.*
 
 ## Summary
 
@@ -15,7 +17,7 @@ Two ideas carry it:
   height on a vertical cell edge is
 
   ```
-  t = (o_lo + o_hi − W_ISO − 1) / W_MAX        o = ceil(s / K) + w
+  t = (o_lo + o_hi − W_ISO − 1) / W_MAX        o = solid ? W_MAX : w
   ```
 
   That is one add and one table read, with no division. It always lies in
@@ -36,62 +38,66 @@ against air) are not part of this pass; see [Limitations](#limitations).
 
 ### 1.1 Values
 
-Each sample stores solid `s` and water `w`, both `u8`.
+Each sample stores solid `s` and water `w`, both `u8`. The terrain and the water
+each have their own range and isolevel, and the two pairs are independent:
 
 | name | meaning |
 |---|---|
 | `S_MAX` | maximum solid value, `1..=255` |
 | `ISO` | terrain isolevel; a sample is **solid when `s > ISO`**, as in the terrain mesher |
-| `W_MAX` | maximum water value; one water unit raises the surface by `cs / W_MAX` |
-| `K = S_MAX / W_MAX` | solid units per water unit |
-| `W_ISO = ISO / K` | the isolevel on the water side |
+| `W_MAX` | maximum water value, `1..=255`; one water unit raises the surface by `cs / W_MAX` |
+| `W_ISO` | water isolevel, `0..W_MAX`; a non-solid sample is inside when `w > W_ISO` |
 
-All three are configurable. Check them once in a config constructor that
-returns `Result`:
+The only checks are the ranges in the table. Rock is never converted into water
+units, so nothing ties the two resolutions together. They stay compatible
+because terrain vertices, and therefore shoreline points, only ever use `s` and
+`ISO`, and water heights only ever use `w`.
 
-```rust
-S_MAX % W_MAX == 0     // a water unit is a whole number of solid units
-ISO % K == 0           // the isolevel lands on a water-unit boundary
-ISO < S_MAX            // some value is solid
-```
-
-The isolevel does not have to sit in the middle of the range. Because of
-`ISO % K == 0` and `ISO < S_MAX`, every non-solid sample has room for at least
-one water unit.
-
-| `S_MAX` | `ISO` | `W_MAX` | `K` | `W_ISO` | valid? |
-|---|---|---|---|---|---|
-| 16 | 8 | 4 | 4 | 2 | ✓ |
-| 16 | 7 | 16 | 1 | 7 | ✓ (with `K = 1`, any `ISO` works) |
-| 16 | 7 | 4 | 4 | — | ✗ (7 % 4 ≠ 0) |
-| 240 | 120 | 8 | 30 | 4 | ✓ |
-| 255 | 127 | 255 | 1 | 127 | ✓ (used in the examples) |
-
-`S_MAX = 255` only divides by 3, 5, 15, 17, 51 and 85, so few water resolutions
-fit it. 240 or a power of two gives many more choices; with powers of two, `K`
-is also a shift.
+**Default `W_ISO = (W_MAX + 1) / 2 − 1`** (integer division). That puts the
+bottom of a water column halfway between a wall sample and the sample above it,
+roughly where the terrain surface sits: 127 for `W_MAX = 255`, 4 for 10, 1 for 4.
 
 ### 1.2 Occupancy
 
-The water side sees solid **rounded up** to water units:
-
 ```
-o = ceil(s / K) + w          // in 0..=W_MAX
-inside  ⇔  o > W_ISO
+solid  =  s > ISO                 // the terrain's own test
+o      =  solid ? W_MAX : w       // for the inside test and as a lower corner
+inside ⇔  o > W_ISO
 ```
 
-Rounding up gives two exact properties:
+- **A non-solid point holds only water.** Any rock in it is below the
+  isolevel; the terrain never draws it, and the water ignores it: it takes no
+  space and never moves the water's height.
+- **A solid point (a ledge or wall) can hold the water standing *under* its
+  rock**, up to the room its rock leaves:
 
-- **Same masks.** For integers, `ceil(s/K) > ISO/K` holds exactly when
-  `s > ISO`. So a sample is solid on the water side exactly when the terrain
-  mesher thinks it is, and the solid mask is a subset of the occupancy mask.
-- **No overlap.** Water never shares volume with solid:
-  `ceil(s/K)·K + w·K ≤ S_MAX` implies `s + K·w ≤ S_MAX`.
+  ```
+  capacity(solid) = floor((S_MAX − s) · W_MAX / S_MAX)     // = W_MAX − ceil(s/K) when K = S_MAX/W_MAX is whole
+  capacity(non-solid) = W_MAX
+  ```
 
-A sample's **capacity** is `W_MAX − ceil(s / K)`. It is **full** when
-`o == W_MAX`. All water-side quantities, `W_EPS` included, are in water units.
-Terrain vertices, and therefore shoreline points, still use full-resolution `s`
-and `ISO`.
+  Its `w` is only ever read as the **upper** corner of a vertical edge, by the
+  ledge rule (§3.2). As a **lower** corner, a solid point counts as full
+  (`o = W_MAX`): water above a ledge rests on the rock, so ledges can be fully
+  submerged.
+
+Why this shape:
+
+- **The masks agree with the terrain.** `solid` is the terrain's own test, and a
+  solid point has `o = W_MAX > W_ISO`, so the solid mask is a subset of the
+  occupancy mask.
+- **Filling never jumps.** A non-solid point's `o` is just its water, so a
+  column rises exactly one step per unit, whatever invisible rock it holds
+  (§5.2). The earlier `o = s + w` model added invisible rock to the height
+  formula: it pushed water up by as much as half a cell, then dropped it back the
+  moment the rock turned solid.
+- **Pools stay flat under ledges.** The water under a ledge is stored at the
+  ledge's own point, so the edge below the ledge can read the level directly
+  (§3.2). Without it, the pocket under every ledge would be trapped air.
+
+A point is **full** when its water reaches its capacity. Water can share space
+with rock below the isolevel; that rock is invisible, so nothing shows it.
+`W_EPS` is in water units.
 
 ### 1.3 Bottom-up invariant and the slab picture
 
@@ -101,10 +107,10 @@ The simulation can break this for a while (falling water, freshly dug terrain).
 The mesher must stay well-defined when that happens, and the rules below do.
 
 **Slab interpretation.** Each sample owns a vertical slab one cell (`cs`) tall.
-The slab starts `δ = cs·(W_ISO + 1)/W_MAX` below the sample. Material fills the
-slab from its floor, solid first and then water, so the filled height in the
-slab is `cs·o/W_MAX`. In a settled column, the surface lies in the slab of the
-topmost non-full sample `j`:
+The slab starts `δ = cs·(W_ISO + 1)/W_MAX` below the sample. A wall's slab is
+full; a non-solid sample's slab fills from its floor with its water, so the
+filled height is `cs·o/W_MAX`. In a settled column, the surface lies in the slab
+of the topmost non-full sample `j`:
 
 ```
 H = y_j − δ + cs·o_j/W_MAX  =  y_j + cs·(o_j − W_ISO − 1)/W_MAX
@@ -180,12 +186,36 @@ lower corner. Call its height `H_k`. Collect these edges into a 4-bit mask `Q`.
 If `Q == 0`, the cell has no top surface. This is the early out for almost every
 cell.
 
-**Water under an overhang.** An edge can have water at the bottom and solid at
-the top with air in between. Occupancy sees both corners inside and finds no
-crossing, so the water would seem to climb the overhang. The case applies when
-the lower corner is wet and inside `O`, the upper corner is solid
-(`s_hi > ISO`), and the lower corner is not solid. How to find the water height
-on such an edge is still open; see [§11](#11-open-questions).
+**Water under a ledge.** An edge can have water at the bottom and a solid
+point at the top. Both corners are inside `O`, so the rule above finds no
+crossing. The ledge rule handles it when the upper corner is solid and the lower
+corner is not solid, inside `O` (`w_lo > W_ISO`), and wet. The height ignores
+the upper corner's rock and uses only its water, the water standing under it:
+
+```
+t = (w_lo + w_hi − W_ISO − 1) / W_MAX
+```
+
+This is the normal formula with the ledge's rock left out. Settled water only
+puts water under the ledge (`w_hi > 0`) once the lower point is full, so as the
+pocket fills, the level keeps rising one step per unit from the lower slab into
+the space under the rock.
+
+The height alone doesn't place the vertex; the terrain decides that. Compare
+`t` with where the terrain draws the ledge on that edge,
+`t_s = (ISO − s_lo)/(s_hi − s_lo)` up from the lower corner:
+
+- `t < t_s`: the edge carries the surface at `t`, and the water stays flat under
+  the ledge.
+- otherwise the water reaches the drawn rock. Leave the edge out; the shoreline
+  points on its faces (§3.3) put the waterline on the rock's surface. `t` can
+  even exceed 1 when a thin ledge has a large pocket; it's dropped the same way,
+  so no clamp is needed.
+
+Do the comparison exactly, in integers:
+`(w_lo + w_hi − W_ISO − 1)·(s_hi − s_lo) < W_MAX·(ISO − s_lo)`. In floats, exact
+ties come out one rounding step off. `w_lo + w_hi < 2·W_MAX`, so `VERT_T` covers
+it.
 
 ### 3.3 Shoreline points
 
@@ -272,7 +302,13 @@ for cell in chunk.cells_in_water_range() {
             let t = VERT_T[c.o[lo] as usize + c.o[hi] as usize];
             v[k] = cell.corner(lo) + Vec3::Y * t;
         }
-        // overhang edges: see §11
+        else if ledge_edge(&c, lo, hi) {   // §3.2: upper solid, lower not solid, inside, wet
+            let t = VERT_T[c.w[lo] as usize + c.w[hi] as usize];
+            if below_ledge(&c, lo, hi) {   // exact integer test against the terrain crossing
+                q |= 1 << k;
+                v[k] = cell.corner(lo) + Vec3::Y * t;
+            }
+        }
     }
     if q == 0 { continue; }
 
@@ -352,17 +388,24 @@ the invariant there are two settled situations:
 Both are the same expression, `t = (o_lo + o_hi − W_ISO − 1) / W_MAX`, with no
 case split and no division.
 
+The second case relies on the upper sample being truly empty when the lower one
+isn't full. Water guarantees that, since it falls. Rock wouldn't: it can sit in
+the upper sample while the lower one is still filling. That is why non-solid
+rock must not count toward `o` (§1.2): otherwise the formula adds it as if it
+were stacked on the water.
+
 ### 5.2 Range and continuity
 
 With `o_lo ∈ [W_ISO+1, W_MAX]` and `o_hi ∈ [0, W_ISO]`, the numerator lies in
 `[0, W_MAX − 1]`. So `t ∈ [0, (W_MAX−1)/W_MAX]` on every surface edge, even when
-the invariant is broken, and no clamp is needed. This was checked exhaustively
-for every valid configuration up to 255.
+the invariant is broken, and no clamp is needed.
 
 As a column fills unit by unit, the surface rises exactly `cs / W_MAX` per unit.
 That includes the moment the top sample becomes inside and the vertex moves to
 the next edge up: at `o = W_ISO` it sits at `t = (W_MAX−1)/W_MAX` on the lower
 edge, and at `o = W_ISO + 1` at `t = 0` on the upper edge, one unit higher.
+Checked for every `W_MAX` from 1 to 255 on columns holding no rock, some rock
+and the most invisible rock (`s = ISO`): always exactly one step per unit.
 
 For comparison, plain interpolation on `o`, with a full lower corner, would give
 `(W_MAX − W_ISO)/(W_MAX − o_hi)`. That isn't linear in volume, so surfaces would rise unevenly, and it
@@ -459,13 +502,14 @@ would tilt away from the bank even in a flat pool.
 
 ## 7. Worked examples
 
-All examples use `S_MAX = W_MAX = 255`, `ISO = 127` (`K = 1`, `W_ISO = 127`), so
-a sample is inside from 128 up and `t = (o_lo + o_hi − 128) / 255`. Heights are
-in cells.
+All examples use `S_MAX = 255`, `ISO = 127`, `W_MAX = 255` and `W_ISO = 127`, so
+a corner is solid from `s = 128` up, water is inside from `w = 128` up, and
+`t = (o_lo + o_hi − 128) / 255`. Heights are in cells.
 
 **A — open water.**
 
-- Lower corners: `s = 140, w = 115`, so `o = 255`. Upper corners: `s = 0, w = 80`.
+- Lower corners: `s = 140`, solid, so they are walls with `o = 255`. Upper
+  corners: `s = 0, w = 80`.
 - All four vertical edges carry the surface, so `Q = 1111`: one quad.
 - Water: `t = (255 + 80 − 128)/255 = 207/255 ≈ 0.81`. Terrain on the same edges:
   `(140 − 127)/140 ≈ 0.09`.
@@ -525,39 +569,49 @@ solid, a ledge over the column at corner 4, and the terrain crosses edge 7
 `(6, 4)` at height `h`.
 
 - *Ledge dips into the water (`h < H`).* Slot 0 `(4,6)` doesn't carry the
-  surface, because both of its corners are inside. Faces 0 (z = 1) and
+  surface: the ledge rule of §3.2 finds the level at or above the drawn ledge
+  and leaves the edge out. Faces 0 (z = 1) and
   3 (x = 0) each have only corner 6 solid, so each terrain segment runs from
   edge 7 (at `h`, below `H`) to the top edge, 6 or 11 (above `H`). `F0` and
   `F3` land on the ledge at the water height, and the walk gives
   `F0, V1, V2, V3, F3`: a pentagon.
-- *Ledge above the water (`h > H`).* There is air between the water and the
-  ledge, which is the overhang case of §3.2 and still open ([§11](#11-open-questions)).
-  Without a rule for it, slot 0 drops out of `Q` and the fallback tilts the
-  water up toward the ledge.
+- *Ledge above the water (`h > H`).* Corner 6 holds the water standing under
+  it. The ledge rule reads `t = (w_4 + w_6 − 128)/255`, finds it below `h`, and
+  slot 0 carries the surface at the pool's level: one flat quad continuing under
+  the ledge. While the pocket is still filling (`w_6` small, or corner 4 not yet
+  full), the level there is lower than the pool's and rises one step per unit;
+  that is unsettled water, and the simulation levels it.
 
 ---
 
 ## 8. Contract with the simulation
 
-The mesher needs only the capacity rule (`w ≤ W_MAX − ceil(s/K)`) and the
-bottom-up invariant for settled water.
+The mesher needs only the capacity rule (§1.2) and the bottom-up invariant for
+settled water: water at a point means the point below is full. A solid point
+below counts as full.
 
-- **Equalise `o`, not `w`,** between neighbouring columns, using the mesher's own
-  height `H = y_j + cs·(o_j − W_ISO − 1)/W_MAX`. Solid shares the slab, so equal
-  `w` doesn't mean equal height.
+- **Equalise the level** between neighbouring columns, using the mesher's own
+  height `H = y_j + cs·(w_j − W_ISO − 1)/W_MAX`, where `j` is the topmost wet,
+  not-full point of the column. If `j` is solid, `w_j` is the water standing
+  under its rock, and the same formula gives that water's level. Rock never
+  enters it.
+- **Water under a ledge is part of the pool.** It flows in sideways from
+  neighbouring columns, like any other water, up to the ledge point's capacity.
+- **Rock below the isolevel changes nothing.** It doesn't take space, so it
+  needs no displacement.
 - Move water only between columns whose levels differ by at least 2 units. At
   low `W_MAX`, settled pools show `1/W_MAX`-cell terraces; raise `W_MAX` if they
   are visible.
 - When terrain is dug out under water, the invariant breaks until the water
   falls. The mesher stays in range and continuous through that, and the §3.3
   fallback joins the level steps.
-- If an edit raises `s`, it lowers capacity, so excess water must be displaced
-  before the capacity check runs.
+- If an edit adds rock to a solid point, or makes a point solid, its capacity
+  drops; excess water must be displaced before the capacity check runs.
 - `W_EPS` is in water units. At low `W_MAX` it should be 0 or 1: at
   `W_MAX = 4`, a value of 2 hides half a cell of water.
 
 **Debug assertions:**
-- `s ≤ S_MAX` and `w ≤ W_MAX − ceil(s/K)`
+- `s ≤ S_MAX` and `w ≤ capacity(s)`
 - for settled water, `w_above > 0` implies `full(below)`
 - total water is conserved between steps, apart from sources and sinks
 - `S & !O == 0` in every cell
@@ -596,9 +650,11 @@ bottom-up invariant for settled water.
 
 | test | expectation |
 |---|---|
-| Resolution rules | for every valid `(S_MAX, ISO, W_MAX)` and every `s`: `(s > ISO) == (ceil(s/K) > W_ISO)`, and `ceil(s/K)·K ≥ s` |
+| Rock independence | changing `s` anywhere in `0..=ISO` changes no water vertex |
+| Masks | for every `s`, `w`: a solid corner is inside `O` (`S ⊆ O`) |
 | Height range | for every `o_lo ∈ (W_ISO, W_MAX]`, `o_hi ∈ [0, W_ISO]`: `VERT_T[o_lo + o_hi] ∈ [0, 1)` |
-| Column fill sweep | filling one column unit by unit raises the surface `1/W_MAX` per unit, with no jump at the isolevel |
+| Column fill sweep | filling one column unit by unit raises the surface `1/W_MAX` per unit, with no jump at the isolevel, including columns holding rock up to `s = ISO` |
+| Ledge | §7 F, both cases; filling a pocket under a ledge rises one step per unit; the integer test agrees with exact arithmetic, ties included |
 | Example A | one quad, all four vertices at exactly `t = 207/255` |
 | Flat basin | in a settled basin, every water vertex, shoreline points included, has the same y |
 | Normals | settled basin: every normal is exactly +Y, shore included. Sloped surface: every normal is unit length, has y > 0, and leans the same way as each face using it |
@@ -618,15 +674,14 @@ bottom-up invariant for settled water.
 - **Thin water can be drawn under the terrain. This is accepted for now
   (2026-10-13).** Water heights come from the slab model, but terrain vertices
   use linear interpolation, and the two agree on classification, not position.
-  Take a solid corner `s` with empty air above: the terrain sits at
-  `(s − ISO)/s`, while the slab model puts the solid top at
-  `(s − ISO − 1)/S_MAX`, which is lower. Water thinner than that gap ends up
-  inside the rock. The gap peaks at about 0.09 cells for `255 / 127` and about
-  0.15 cells for `16 / 8`, and it is much larger with `interpolate = false`
-  (terrain at the midpoint). If it ever needs fixing: lift `H_k` to the terrain
-  crossing on that edge (this breaks flatness), or place the terrain's
-  vertical-edge vertices by the slab model too (this changes how the terrain
-  looks).
+  The worst case is a wall below and invisible rock right at the isolevel above
+  (`s_hi = ISO`): the terrain is drawn at the top of the edge, while one unit of
+  water sits just over halfway. The most that can be hidden is exactly
+  `W_ISO / W_MAX` of a cell, just under half (0.498 at `W_MAX = 255`, 0.25 at 4),
+  checked exhaustively. With `interpolate = false` the terrain sits at the
+  midpoint instead. If it ever needs fixing: lift `H_k` to the terrain crossing
+  on that edge (this breaks flatness), or place the terrain's vertical-edge
+  vertices by the slab model too (this changes how the terrain looks).
 - **Side faces aren't drawn by this pass.** That covers waterfalls, falling
   sheets and water standing against air. Level steps are joined by a sloped
   strip. A separate side-face pass can come later: marching cubes on `O`,
@@ -646,13 +701,5 @@ bottom-up invariant for settled water.
 
 ## 11. Open questions
 
-1. **Water height under an overhang (§3.2).** The original rule computed
-   `(o_lo + w_hi − …)/W_MAX` from the edge alone. In the slab model, though, a
-   solid upper sample can't hold the water *under* its solid, so that formula
-   doesn't give the pool level unless the simulation stores under-ledge water in
-   the ledge sample. One local alternative: in settled water all surface
-   vertices share `H`, so take `H` from a surface edge of the same cell, and
-   leave the edge out when there is none. That needs checking for agreement
-   between the cells sharing the edge when the water is unsettled.
-2. **Storage migration** (§9): the terrain moves to `u8` with configurable
+1. **Storage migration** (§9): the terrain moves to `u8` with configurable
    `S_MAX` / `ISO` before the water mesher can share its vertices.
