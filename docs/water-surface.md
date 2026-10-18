@@ -515,45 +515,48 @@ would tilt away from the bank even in a flat pool.
 
 ## 7. Worked examples
 
-All examples use `S_MAX = 255`, `ISO = 127`, `W_MAX = 255` and `W_ISO = 127`, so
-a corner is solid from `s = 128` up, water is inside from `w = 128` up, and
-`t = (o_lo + o_hi − 128) / 255`. Heights are in cells.
+All examples use the chosen constants, `S_MAX = 15`, `ISO = 7`, `W_MAX = 15` and
+`W_ISO = 7`. A corner is solid from `s = 8` up, water is inside from `w = 8` up,
+`t = (o_lo + o_hi − 8) / 15`, and the terrain crosses an edge where the field
+reaches 7.5. Heights are in cells.
 
 **A — open water.**
 
-- Lower corners: `s = 140`, solid, so they are walls with `o = 255`. Upper
-  corners: `s = 0, w = 80`.
+- Lower corners: `s = 9`, solid, so they are walls with `o = 15`. Upper
+  corners: `s = 0, w = 5`.
 - All four vertical edges carry the surface, so `Q = 1111`: one quad.
-- Water: `t = (255 + 80 − 128)/255 = 207/255 ≈ 0.81`. Terrain on the same edges:
-  `(140 − 127)/140 ≈ 0.09`.
+- Water: `t = (15 + 5 − 8)/15 = 12/15 = 0.8`. Terrain on the same edges:
+  `(9 − 7.5)/9 = 1/6 ≈ 0.17`.
 
-The result is a flat quad with about 0.72 cells of visible depth.
+The result is a flat quad with about 0.63 cells of visible depth.
 
 **B — top sample just inside.** The sample below is full and the top sample has
-`s = 0, w = 129`. It counts as inside, so the surface is on the edge above it:
-`t = (129 + 0 − 128)/255 ≈ 0.004`.
+`s = 0, w = 8`. It counts as inside, so the surface is on the edge above it, at
+`t = (8 + 0 − 8)/15 = 0`: exactly at the sample. One unit less (`w = 7`) puts it
+on the edge below at `t = (15 + 7 − 8)/15 = 14/15`, one step lower.
 
 **C — steep bank.** A face joins an open-water column A and a bank column B.
 
-- A: lower `s = 0, w = 255`; upper `w = 100`, so `H = 227/255 ≈ 0.89`.
-- B: lower `s = 255`, upper `s = 200`; both solid.
-- The terrain polyline runs from the bottom-edge vertex (0.498 of the face
-  width from A, height 0) to the top-edge vertex (0.635 from A, height 1).
-- At height 0.89 that is 0.620 from A: the shoreline point.
+- A: lower `s = 0, w = 15`; upper `w = 6`, so `H = 13/15 ≈ 0.867`.
+- B: lower `s = 15`, upper `s = 12`; both solid.
+- The terrain polyline runs from the bottom-edge vertex (7.5/15 = 0.5 of the
+  face width from A, height 0) to the top-edge vertex (7.5/12 = 0.625 from A,
+  height 1).
+- At height 13/15 that is 73/120 ≈ 0.608 from A: the shoreline point.
 
-Snapping to the top-edge vertex instead would lift the water's corner 0.11 cells
+Snapping to the top-edge vertex instead would lift the water's corner 0.13 cells
 and tilt the surface up the bank.
 
 **D — bank corner.** Columns A, B and C are open water at `H = 0.6` (lower
-`w = 255`, upper `w = 26`). Column D is the bank: lower `s = 255`, upper
-`s = 100`, so the terrain crosses D's vertical edge at 0.826. D has no water,
-so it isn't in `Q`.
+`w = 15`, upper `w = 2`). Column D is the bank: lower `s = 15`, upper `s = 6`,
+so the terrain crosses D's vertical edge at `(15 − 7.5)/(15 − 6) = 5/6 ≈ 0.833`.
+D has no water, so it isn't in `Q`.
 
 - `Q` = {A, B, C}: a pentagon.
 - On face (A, D), only D's lower corner is solid, so the terrain is one segment.
-  It runs from the bottom-edge vertex (0.502 from D, height 0) to D's
-  vertical-edge vertex (height 0.826).
-- At height 0.6 the shoreline point is 0.137 of the face width from D. Face
+  It runs from the bottom-edge vertex (0.5 from D, height 0) to D's
+  vertical-edge vertex (height 5/6).
+- At height 0.6 the shoreline point is 0.14 of the face width from D. Face
   (C, D) is symmetric.
 
 Snapping to D's terrain vertex would raise one corner by 0.23 cells. Here two
@@ -563,7 +566,8 @@ corner is one triangle, the cut is exact.
 **E — rock through the surface.** Inside corners are 0, 1, 3, 4 and 5 (case 196
 in the terrain's empty-bit indexing): solid ground at 0, 1, 4 and 5, and a rock
 at corner 3 = (1, 1, 0). Water stands on the ground up to `H`, so corners 2, 6
-and 7 are wet.
+and 7 are wet. For example: `s = 15` at 0, 1, 3, 4, 5; `s = 0, w = 2` at 2, 6, 7,
+so `H = 0.6`.
 
 - Slots 0 `(4,6)`, 1 `(5,7)` and 3 `(0,2)` carry the surface. Slot 2 `(1,3)`
   doesn't, because both of its corners are inside.
@@ -577,23 +581,31 @@ and 7 are wet.
   `F2` on edge 2, which is marching cubes' own pentagon for this case.
 
 **F — ledge reaching into the water.** The bottom corners 0, 1, 4 and 5 are
-full of water. Corners 2, 3 and 7 hold water up to `H`. Corner 6 = (0, 1, 1) is
-solid, a ledge over the column at corner 4, and the terrain crosses edge 7
-`(6, 4)` at height `h`.
+full of water (`s = 0, w = 15`). Corners 2, 3 and 7 hold `w = 2`, so the pool
+is at `H = 0.6`. Corner 6 = (0, 1, 1) is solid, a ledge over the column at
+corner 4, and holds the pool's water under its rock, `w_6 = 2`. The terrain
+crosses edge 7 `(6, 4)` at `h = 7.5/s_6` above corner 4.
 
-- *Ledge dips into the water (`h < H`).* Slot 0 `(4,6)` doesn't carry the
-  surface: the ledge rule of §3.2 finds the level at or above the drawn ledge
-  and leaves the edge out. Faces 0 (z = 1) and
-  3 (x = 0) each have only corner 6 solid, so each terrain segment runs from
-  edge 7 (at `h`, below `H`) to the top edge, 6 or 11 (above `H`). `F0` and
-  `F3` land on the ledge at the water height, and the walk gives
-  `F0, V1, V2, V3, F3`: a pentagon.
-- *Ledge above the water (`h > H`).* Corner 6 holds the water standing under
-  it. The ledge rule reads `t = (w_4 + w_6 − 128)/255`, finds it below `h`, and
-  slot 0 carries the surface at the pool's level: one flat quad continuing under
-  the ledge. While the pocket is still filling (`w_6` small, or corner 4 not yet
-  full), the level there is lower than the pool's and rises one step per unit;
-  that is unsettled water, and the simulation levels it.
+- *Ledge dips into the water: `s_6 = 13`, so `h = 7.5/13 ≈ 0.577 < H`.* Its
+  capacity is `15 − 13 = 2`, so it holds the 2 units. The ledge rule reads
+  `t = (15 + 2 − 8)/15 = 0.6` and tests `2·9·13 = 234 < 15·15 = 225`, which is
+  false: the level is at or above the drawn ledge, so slot 0 is left out.
+  Faces 0 (z = 1) and 3 (x = 0) each have only corner 6 solid, so each terrain
+  segment runs from edge 7 (at `h`, below `H`) to the top edge, 6 or 11 (height
+  1, above `H`). `F0` and `F3` land on the ledge at the water height, and the
+  walk gives `F0, V1, V2, V3, F3`: a pentagon.
+- *Ledge above the water: `s_6 = 10`, so `h = 0.75 > H`.* Capacity 5, holding 2.
+  The ledge rule reads the same `t = 0.6` and tests `2·9·10 = 180 < 225`, true,
+  so slot 0 carries the surface at the pool's level: one flat quad continuing
+  under the ledge. While the pocket is still filling (`w_6` small, or corner 4
+  not yet full), the level there is lower than the pool's and rises one step per
+  unit; that is unsettled water, and the simulation levels it.
+- *Thick ledge: `s_6 = 15`, so `h = 0.5`.* Capacity 0, so `w_6 = 0` and
+  `t = 7/15 ≈ 0.467`. `2·7·15 = 210 < 225` keeps the edge: the rock's slab
+  starts at 7/15, so this is as high as water can stand under it, just below the
+  drawn underside at 0.5. The pool at 0.6 slopes down to it under the rock. This
+  is the slab model and the terrain's linear interpolation disagreeing by
+  1/30 of a cell; see Limitations.
 
 ---
 
@@ -669,7 +681,7 @@ below counts as full.
 | Height range | for every `o_lo ∈ (W_ISO, W_MAX]`, `o_hi ∈ [0, W_ISO]`: `VERT_T[o_lo + o_hi] ∈ [0, 1)` |
 | Column fill sweep | filling one column unit by unit raises the surface `1/W_MAX` per unit, with no jump at the isolevel, including columns holding rock up to `s = ISO` |
 | Ledge | §7 F, both cases; filling a pocket under a ledge rises one step per unit; the integer test agrees with exact arithmetic, ties included |
-| Example A | one quad, all four vertices at exactly `t = 207/255` |
+| Example A | one quad, all four vertices at exactly `t = 12/15` |
 | Flat basin | in a settled basin, every water vertex, shoreline points included, has the same y |
 | Normals | settled basin: every normal is exactly +Y, shore included. Sloped surface: every normal is unit length, has y > 0, and leans the same way as each face using it |
 | Shoreline on terrain | with `SHORE_OVERLAP = 0`, every terrain-derived shoreline point lies on a segment of flying edges' own mesh (distance < 1e-5) |
@@ -718,5 +730,4 @@ below counts as full.
 
 1. ~~**Storage migration** (§9)~~: done 2026-10-19, with `S_MAX = 15`,
    `ISO = 7` as constants; `W_MAX = 15`, `W_ISO = 7` chosen the same day, and
-   the terrain now interpolates to `ISO + 0.5`. The worked examples in §7 still
-   use 255 / 127 and interpolation to `ISO`, and need redoing on both counts.
+   the terrain now interpolates to `ISO + 0.5`. §7 redone on that scale.
