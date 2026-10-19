@@ -142,6 +142,12 @@ fn examples() -> Vec<Preset> {
             [0, 0, 2, 2, 0, 0, 0, 0],
         ),
         preset(
+            "pocket under a rock",
+            "solid 0, 3, 4, 5 seal corner 1 off: a pocket at 2.5/15 and a pool at 8.5/15, both flat",
+            [15, 0, 0, 15, 15, 15, 0, 0],
+            [0, 10, 1, 0, 0, 0, 1, 1],
+        ),
+        preset(
             "level at a terrain vertex",
             "water at 10.5/15, the bank drawn at 10.5/15: the shoreline lands on its vertex",
             [0, 0, 0, 0, 15, 15, 3, 3],

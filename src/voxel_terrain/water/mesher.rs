@@ -9,7 +9,7 @@ use bevy::math::{vec3, Vec3};
 
 use super::{
     tables::{
-        face_bits, Slot, FACE_EDGES, FACE_EDGE_NEXT, FACE_EDGE_OWN, FACE_SEGS,
+        face_bits, Slot, CORNER_BODY, FACE_EDGES, FACE_EDGE_NEXT, FACE_EDGE_OWN, FACE_SEGS,
         MS_TRIS, RECIP, VERT_EDGE, VERT_T,
     },
     SHORE_OVERLAP, W_EPS, W_ISO, W_MAX,
@@ -255,6 +255,39 @@ impl Mesher<'_> {
             return;
         }
 
+        // Water in separate bodies of open space -- a pool on top and a pocket
+        // walled off under a rock -- stands at its own level, so each body's
+        // surface edges are meshed as their own polygon. A slot carries the
+        // water of its upper corner, or of its lower one under a ledge.
+        let bodies = &CORNER_BODY[c.solid as usize];
+        let body = |k: usize| {
+            let (lo, hi) = VERT_EDGE[k];
+            if bit(c.solid, hi) {
+                bodies[lo]
+            } else {
+                bodies[hi]
+            }
+        };
+        let mut remaining = q;
+        while remaining != 0 {
+            let first = remaining.trailing_zeros() as usize;
+            let group = (0..4)
+                .filter(|&k| (remaining >> k) & 1 == 1 && body(k) == body(first))
+                .fold(0, |g, k| g | 1 << k);
+            remaining &= !group;
+            self.polygon(out, cell, c, group, &v);
+        }
+    }
+
+    /// The surface over the slots in `q`, which all carry one body of water.
+    fn polygon(
+        &self,
+        out: &mut Surface,
+        cell: (usize, usize, usize),
+        c: &Corners,
+        q: usize,
+        v: &[Vec3; 4],
+    ) {
         // 2. A shoreline point on each face with exactly one surface edge.
         let mut f_points = [Vec3::ZERO; 4];
         for f in 0..4 {
@@ -262,7 +295,7 @@ impl Mesher<'_> {
             let (a, b) = ((q >> f) & 1, (q >> next) & 1);
             if a != b {
                 let k_wet = if a == 1 { f } else { next };
-                f_points[f] = self.shore_point(cell, c, f, k_wet, &v);
+                f_points[f] = self.shore_point(cell, c, f, k_wet, v);
             }
         }
 

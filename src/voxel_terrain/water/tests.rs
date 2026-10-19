@@ -581,3 +581,20 @@ fn slots_follow_the_doc() {
 }
 
 
+
+/// Solid 0, 3, 4, 5 seal corner 1 off under rock 3: a pocket of water there
+/// and a pool above are two bodies at two levels, each flat, not one surface
+/// sloping between them.
+#[test]
+fn a_sealed_pocket_and_the_pool_above_are_meshed_apart() {
+    let surface = mesh_preset("pocket under a rock");
+    let mut levels: Vec<f32> = surface.positions.iter().map(|p| p.y).collect();
+    levels.sort_by(f32::total_cmp);
+    levels.dedup();
+    assert_eq!(levels, [VERT_T[10], VERT_T[16]], "the pocket's level and the pool's");
+    for n in &surface.normals {
+        assert!(n.x == 0.0 && n.z == 0.0 && n.y > 0.0, "sloped water between the two bodies: {n}");
+    }
+    // The pool: a pentagon over slots 0, 1, 3. The pocket: a triangle on slot 2.
+    assert_eq!(surface.triangle_count(), 3 + 1);
+}

@@ -173,6 +173,48 @@ pub const RECIP: [f32; W_MAX as usize + 1] = {
     table
 };
 
+/// For each solid mask `S`, which body of open space each corner is in: the
+/// smallest corner index it connects to through cube edges with both ends not
+/// solid, or 8 for a solid corner.
+///
+/// Edges only, never face or body diagonals, which is how the terrain's
+/// triangle table resolves ambiguity: on a diagonal face the solid corners
+/// join, so the open ones are apart. Water in two bodies can stand at two
+/// levels in one cell, and each is meshed on its own.
+pub const CORNER_BODY: [[u8; 8]; 256] = {
+    let mut table = [[8u8; 8]; 256];
+    let mut mask = 0;
+    while mask < 256 {
+        let mut body = [8u8; 8];
+        let mut c = 0;
+        while c < 8 {
+            if (mask >> c) & 1 == 0 {
+                body[c] = c as u8;
+            }
+            c += 1;
+        }
+        // Relax along open edges until nothing changes; eight rounds cover
+        // the longest path through a cube.
+        let mut round = 0;
+        while round < 8 {
+            let mut edge = 0;
+            while edge < 12 {
+                let (a, b) = EDGE_VERTEX_INDICES[edge];
+                if body[a] < 8 && body[b] < 8 {
+                    let m = if body[a] < body[b] { body[a] } else { body[b] };
+                    body[a] = m;
+                    body[b] = m;
+                }
+                edge += 1;
+            }
+            round += 1;
+        }
+        table[mask] = body;
+        mask += 1;
+    }
+    table
+};
+
 /// A polygon corner: a surface vertex on slot `k` or a shoreline point on
 /// face `f`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -380,6 +422,21 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A body is only ever open corners, joined along edges; the corner the
+    /// terrain walls off on three sides is its own body.
+    #[test]
+    fn corner_bodies_follow_open_edges() {
+        assert_eq!(CORNER_BODY[0], [0; 8]);
+        assert_eq!(CORNER_BODY[255], [8; 8]);
+        // Solid 0, 3, 4, 5: corner 1 is sealed off from 2, 6, 7.
+        let solid = 0b0011_1001;
+        assert_eq!(CORNER_BODY[solid], [8, 1, 2, 8, 8, 8, 2, 2]);
+        // Only a face diagonal open (1 and 2 on z = 0, with 0 and 3 solid,
+        // and the whole far face solid): two bodies, not one.
+        let solid = 0b1111_1001;
+        assert_eq!(CORNER_BODY[solid], [8, 1, 2, 8, 8, 8, 8, 8]);
     }
 
     #[test]

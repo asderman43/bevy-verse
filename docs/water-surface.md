@@ -268,6 +268,18 @@ valid. In the fallback, `F` can land on a face's top or bottom edge, so it
 leaves the water plane. The top view doesn't change, so the argument still
 holds.
 
+**Separate bodies of water.** One cell can hold two bodies of open space
+that the terrain walls apart: with corners 0, 3, 4 and 5 solid, corner 1 is a
+pocket under rock 3, sealed from 2, 6 and 7 (both faces it shares with them are
+diagonal, and the terrain joins the solid corners across them). Water in the
+pocket and a pool above stand at two levels. Meshed as one polygon, the surface
+would slope between them. So the slots in `Q` are grouped by the body their
+water is in -- the upper corner's, or under a ledge the lower corner's --
+using `CORNER_BODY`, which joins open corners along cube edges only (the
+terrain's own rule), and each group is its own polygon with its own shoreline
+points. Here that gives a pentagon at the pool's level and a triangle in the
+pocket, both flat.
+
 ### 3.5 Pseudo-code
 
 ```rust
@@ -313,6 +325,7 @@ layout.
 | `FACE_SEGS[16]` | tiny | for a face's 4-bit inside mask, the pairs of face edges joined by a contour segment (at most 2) |
 | `MS_TRIS[16]` | tiny | triangles over `V0–V3`, `F0–F3` (§3.4) |
 | `RECIP` | `W_MAX + 1` × f32 | `1 / d` for `d ≥ 1`; fallback only |
+| `CORNER_BODY[256]` | 2 KiB | for a solid mask, which body of open space each corner is in (§3.4) |
 
 **`FACE_SEGS` must resolve ambiguous faces the way the terrain does.** 14 of the
 16 face cases are unambiguous. For the two diagonal cases, `TRIANGLE_TABLE`
@@ -487,6 +500,11 @@ holding the pool's water under it.
   rises a step per unit up to `w_6 = 4`; at 5 the slab is full and the water
   meets the drawn underside.
 
+**Pocket under a rock.** Solid 0, 3, 4, 5; a pocket at corner 1 holding `w = 10`
+(`(10 − 7.5)/15 = 2.5/15` under rock 3) and a pool with `w = 1` at 2, 6, 7
+(`8.5/15`). Two bodies: a flat pentagon over slots 0, 1, 3 and a flat triangle
+on slot 2, not one quad sloping between them.
+
 **Level at a terrain vertex.** Water at `(15 + 3 − 7.5)/15 = 10.5/15` next to a
 bank drawn at `(15 + 3 − 7.5)/15`: the shoreline point is the bank's vertex,
 bit for bit.
@@ -568,6 +586,7 @@ terrain's own tests.
 | `neighbouring_cells_agree_on_their_shared_faces`, `a_level_step_has_no_crack` | each in-face edge used by exactly two triangles |
 | `chunks_agree_on_their_shared_face` | two chunks put the same points on their shared face (1e-5) |
 | `a_level_at_a_terrain_vertex_lands_on_it` | the shoreline point is the terrain vertex, bitwise |
+| `a_sealed_pocket_and_the_pool_above_are_meshed_apart`, `corner_bodies_follow_open_edges` | two bodies in one cell, each flat at its own level |
 | examples A–F, `surface_cases_give_their_table_shapes`, `every_preset_meshes` | §7 and the 16 cases |
 | `face_segs_match_the_terrain` | for all 256 cases × 4 faces, `FACE_SEGS` gives the terrain's in-face segments |
 | `ms_tris_are_convex_and_face_up`, `diagonal_cases_do_not_bridge`, `vert_t_covers_the_surface_range` | tables |
