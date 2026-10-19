@@ -202,7 +202,10 @@ surface, emit triangles approximating where the surface crosses that cube.
 The field is a flat `Vec<u8>` indexed `x + y*size + z*size*size`, so a row of
 samples along X is contiguous — which is what flying edges scans. Samples run
 `0..=S_MAX` (15), and the isolevel is the constant `ISO` (7); both live in
-`isosurface/mod.rs`. Neither is per job. Vertices interpolate to `ISO + 0.5`,
+`isosurface/mod.rs`. Neither is per job. On vertical edges, samples are read as
+fill: the vertex is at `(s_solid + s_empty − 7.5)/S_MAX` from the solid end, the
+same volume formula the water mesher uses (`docs/water-surface.md`). On horizontal
+edges, vertices interpolate to `ISO + 0.5`,
 halfway between the highest empty value and the lowest solid one.
 
 **A sample of `<= ISO` is empty space; `> ISO` is solid.** This is

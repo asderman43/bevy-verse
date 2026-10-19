@@ -318,6 +318,20 @@ pub(crate) fn place_vertex(
 /// How far along `edge` the surface crosses it: 0 at the edge's first corner
 /// in [`EDGE_VERTEX_INDICES`], 1 at its second.
 ///
+/// **Horizontal edges** interpolate linearly to [`ISO`] + 0.5.
+///
+/// **Vertical edges** read the samples as fill: each sample owns a slab one
+/// cell tall centred on it, and `s` is how much of it the rock fills, out of
+/// [`S_MAX`], from the side it is attached to. The rock reaches
+/// `(s_solid + s_empty − (ISO + 0.5)) / S_MAX` of the way from the solid
+/// corner, counting the empty sample's rock as part of the same body. This is
+/// the same volume-of-fluid formula the water uses, so the two meet on the
+/// same 1/`S_MAX` grid; for a settled (bottom-up) column it is exactly the
+/// rock's top. See `docs/water-surface.md` §1.
+///
+/// Both rules classify exactly as `> ISO` does, and both put every crossing
+/// strictly inside its edge.
+///
 /// Split out of [`place_vertex`] because the gradient normal is blended along
 /// the edge by the same amount, and working it out twice is a second divide.
 pub(crate) fn edge_t(edge: usize, corners: &[u8; 8], interpolate: Interpolate) -> f32 {
@@ -326,12 +340,62 @@ pub(crate) fn edge_t(edge: usize, corners: &[u8; 8], interpolate: Interpolate) -
     }
 
     let (a, b) = EDGE_VERTEX_INDICES[edge];
-    let (from, to) = (corners[a] as f32, corners[b] as f32);
-    // Only ever called for an edge the surface crosses, so one corner is at
-    // most ISO and the other at least ISO + 1: `to - from` cannot be zero, and
-    // the result is strictly inside (0, 1).
-    (CROSSING - from) / (to - from)
+    // Both rules depend only on the two corner values, which run 0..=S_MAX,
+    // so they are tables: no divide, and no branch on noisy fields where
+    // which kind of edge comes next is unpredictable. Masked to the table, so
+    // an out-of-range sample (debug-asserted in the scan) reads a wrong entry
+    // rather than out of bounds.
+    let pair = ((corners[a] as usize) << 4 | corners[b] as usize) & 0xFF;
+    if VERTICAL[edge] {
+        FILL_T[pair]
+    } else {
+        LINEAR_T[pair]
+    }
 }
+
+/// Which table edges run along Y.
+const VERTICAL: [bool; 12] = {
+    let mut table = [false; 12];
+    let mut edge = 0;
+    while edge < 12 {
+        table[edge] = tables::EDGE_AXIS_ORIGIN[edge].0 == 1;
+        edge += 1;
+    }
+    table
+};
+
+/// [`edge_t`] on a horizontal edge, indexed `from << 4 | to`: linear, to
+/// `ISO + 0.5`. Entries for two corners on the same side are unused.
+const LINEAR_T: [f32; 256] = {
+    let mut table = [0.0; 256];
+    let mut pair = 0;
+    while pair < 256 {
+        let (from, to) = ((pair >> 4) as u8, (pair & 15) as u8);
+        if (from > ISO) != (to > ISO) {
+            table[pair] = (CROSSING - from as f32) / (to as f32 - from as f32);
+        }
+        pair += 1;
+    }
+    table
+};
+
+/// [`edge_t`] on a vertical edge, indexed `from << 4 | to`: the rock reaches
+/// `(from + to − (ISO + 0.5)) / S_MAX` from the solid corner.
+const FILL_T: [f32; 256] = {
+    let mut table = [0.0; 256];
+    let mut pair = 0;
+    while pair < 256 {
+        let (from, to) = ((pair >> 4) as u8, (pair & 15) as u8);
+        if (from > ISO) != (to > ISO) {
+            let reach = (from as f32 + to as f32 - CROSSING) / S_MAX as f32;
+            table[pair] = if from > ISO { reach } else { 1.0 - reach };
+        }
+        pair += 1;
+    }
+    table
+};
+
+const _: () = assert!(S_MAX < 16, "edge_t's tables index two 4-bit samples");
 
 /// The point `t` of the way along `edge` of the cell whose lowest corner is
 /// `cell`.
@@ -344,6 +408,47 @@ pub(crate) fn place_at(cell: Vec3, edge: usize, t: f32) -> Vec3 {
     let (start, end) = (VERTEX_POSITIONS[a], VERTEX_POSITIONS[b]);
     cell + (start + t * (end - start))
 }
+
+/// The terrain vertex on the grid edge running along `axis` (0 = X, 1 = Y,
+/// 2 = Z) from sample `(x, y, z)`, bit for bit where flying edges puts it.
+///
+/// Flying edges writes each vertex from the edge's owner, the cell whose
+/// lowest corner is the edge's lower sample, through table edge 0, 3 or 8. On
+/// the buffer's far faces that cell does not exist, and the boundary cell
+/// writes it through its own table edge instead (`owned_slots`). This follows
+/// the same rule through the same [`edge_t`] and [`place_at`], so anything
+/// that has to meet the terrain mesh exactly -- the water's shoreline -- can
+/// call it with whichever cell it is in.
+///
+/// Only meaningful for an edge the surface crosses.
+pub(crate) fn terrain_vertex(
+    buffer: &VoxelBuffer,
+    (x, y, z): (usize, usize, usize),
+    axis: usize,
+    interpolate: Interpolate,
+) -> Vec3 {
+    let last = buffer.size() - 2;
+    let (cx, cy, cz) = (x.min(last), y.min(last), z.min(last));
+    let edge = EDGE_AT[axis][(x - cx) | (y - cy) << 1 | (z - cz) << 2];
+
+    let corners = buffer.cell_corners(cx, cy, cz);
+    let cell = vec3(cx as f32, cy as f32, cz as f32);
+    place_at(cell, edge, edge_t(edge, &corners, interpolate))
+}
+
+/// The table edge along each axis from each corner offset (x bit 0, y bit 1,
+/// z bit 2), for [`terrain_vertex`]. An offset along the axis itself never
+/// occurs and is left at 0.
+const EDGE_AT: [[usize; 8]; 3] = {
+    let mut table = [[0; 8]; 3];
+    let mut edge = 0;
+    while edge < 12 {
+        let (axis, ox, oy, oz) = tables::EDGE_AXIS_ORIGIN[edge];
+        table[axis][ox | oy << 1 | oz << 2] = edge;
+        edge += 1;
+    }
+    table
+};
 
 /// The smooth normal of the vertex `t` of the way along `edge`, in the cell
 /// whose lowest corner is `(x, y, z)`: the density gradient, blended between

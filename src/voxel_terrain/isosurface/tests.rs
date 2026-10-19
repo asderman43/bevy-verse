@@ -14,6 +14,7 @@ use super::{
     case_index, extract, extract_with, flying_edges, marching_cubes, place_vertex,
     tables::{EDGE_VERTEX_INDICES, TRIANGLE_COUNT, TRIANGLE_TABLE, VERTEX_POSITIONS},
     test_maps, ExtractionJob, ExtractionScratch, Interpolate, Method, Surface, VoxelBuffer, ISO,
+    S_MAX,
     MAX_SIZE,
 };
 
@@ -561,16 +562,55 @@ fn place_at_lands_where_the_longhand_formula_does() {
                     }
                     let (start, end) = (VERTEX_POSITIONS[a], VERTEX_POSITIONS[b]);
                     let (from, to) = (corners[a] as f32, corners[b] as f32);
-                    let longhand =
-                        cell + (start + (ISO as f32 + 0.5 - from) * (end - start) / (to - from));
+                    let placed = place_vertex(cell, edge, &corners, true);
 
-                    assert_eq!(place_vertex(cell, edge, &corners, true), longhand);
+                    if start.y == end.y {
+                        // Horizontal: linear, to ISO + 0.5, bit for bit.
+                        let longhand =
+                            cell + (start + (ISO as f32 + 0.5 - from) * (end - start) / (to - from));
+                        assert_eq!(placed, longhand);
+                    } else {
+                        // Vertical: the rock reaches (s_solid + s_empty - 7.5) / S_MAX
+                        // from its solid end.
+                        let (solid, empty) = if corners[a] > ISO { (start, end) } else { (end, start) };
+                        let reach = (from + to - (ISO as f32 + 0.5)) / S_MAX as f32;
+                        let longhand = cell + solid + (empty - solid) * reach;
+                        assert!((placed - longhand).length() < 1e-6, "{placed} vs {longhand}");
+                    }
                     assert_eq!(
                         place_vertex(cell, edge, &corners, false),
                         cell + (start + end) / 2.0,
                     );
                 }
             }
+        }
+    }
+}
+
+/// Vertical edges read samples as fill: a settled column, rock filling each
+/// sample's slab from the bottom, is drawn exactly at the rock's top, for every
+/// height on the 1/S_MAX grid.
+#[test]
+fn a_settled_column_is_drawn_at_its_fill_height() {
+    let size = 4;
+    // Heights from just above sample 1's slab bottom to just below sample 2's
+    // top, in units: height = 1 - 1/2 + units / S_MAX.
+    for units in 8..=22 {
+        let height = 0.5 + units as f32 / S_MAX as f32;
+        let mut buffer = VoxelBuffer::new(size);
+        for z in 0..size {
+            for x in 0..size {
+                buffer.set(x, 0, z, S_MAX);
+                for y in 1..size {
+                    let fill = units as i32 - (y as i32 - 1) * S_MAX as i32;
+                    buffer.set(x, y, z, fill.clamp(0, S_MAX as i32) as u8);
+                }
+            }
+        }
+        let surface = flying_edges::extract(&buffer, true);
+        assert!(!surface.positions.is_empty());
+        for p in &surface.positions {
+            assert!((p.y - height).abs() < 1e-6, "{units} units: drawn at {}, filled to {height}", p.y);
         }
     }
 }

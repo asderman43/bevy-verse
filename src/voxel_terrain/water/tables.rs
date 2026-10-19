@@ -134,6 +134,33 @@ pub const FACE_SEGS: [FaceSegs; 16] = {
     table
 };
 
+/// [`FACE_SEGS`] with the diagonal cases resolved the other way: each segment
+/// cuts off an **inside** corner, so the two inside corners stay apart.
+///
+/// For the occupancy fallback (§3.3), where the inside corners on a diagonal
+/// face are water on one side and rock on the other. Water joins water, not
+/// rock, so its contour runs to its own outside neighbours rather than across
+/// to the rock. Identical to [`FACE_SEGS`] everywhere but the two diagonals.
+pub const FACE_SEGS_APART: [FaceSegs; 16] = {
+    let mut table = FACE_SEGS;
+    let mut mask = 0;
+    while mask < 16 {
+        if mask == 0b0101 || mask == 0b1010 {
+            let mut n = 0;
+            let mut i = 0;
+            while i < 4 {
+                if (mask >> i) & 1 == 1 {
+                    table[mask].segs[n] = ((i + 3) % 4, i);
+                    n += 1;
+                }
+                i += 1;
+            }
+        }
+        mask += 1;
+    }
+    table
+};
+
 /// The face-local inside mask of face `f`, from a cell's 8-bit corner mask.
 pub const fn face_bits(cell_mask: u8, f: usize) -> usize {
     let mut bits = 0;
@@ -145,16 +172,17 @@ pub const fn face_bits(cell_mask: u8, f: usize) -> usize {
     bits
 }
 
-/// Water height up a vertical edge from its lower corner, indexed by
-/// `o_lo + o_hi` (or `w_lo + w_hi` under a ledge): `(n − W_ISO − 1) / W_MAX`.
+/// Water height up a vertical edge from its lower corner, indexed by the two
+/// corners' bottom fill `b_lo + b_hi` (§3.2): `(n − 7.5) / W_MAX`, the same
+/// volume formula the terrain uses on vertical edges.
 ///
-/// Entries below `W_ISO + 1` are negative and never read; the top entries
-/// exceed 1 and are only read by the ledge rule, which drops them.
+/// Entries below 8 are negative and never read; the top entries exceed 1 and
+/// are only read by the ledge rule, which drops them.
 pub const VERT_T: [f32; 2 * W_MAX as usize + 1] = {
     let mut table = [0.0; 2 * W_MAX as usize + 1];
     let mut n = 0;
     while n < table.len() {
-        table[n] = (n as f32 - (W_ISO as f32 + 1.0)) / W_MAX as f32;
+        table[n] = (n as f32 - (W_ISO as f32 + 0.5)) / W_MAX as f32;
         n += 1;
     }
     table
@@ -168,6 +196,48 @@ pub const RECIP: [f32; W_MAX as usize + 1] = {
     while d < table.len() {
         table[d] = 1.0 / d as f32;
         d += 1;
+    }
+    table
+};
+
+/// For each solid mask `S`, which body of open space each corner is in: the
+/// smallest corner index it connects to through cube edges with both ends not
+/// solid, or 8 for a solid corner.
+///
+/// Edges only, never face or body diagonals, which is how the terrain's
+/// triangle table resolves ambiguity: on a diagonal face the solid corners
+/// join, so the open ones are apart. Water in two bodies can stand at two
+/// levels in one cell, and each is meshed on its own.
+pub const CORNER_BODY: [[u8; 8]; 256] = {
+    let mut table = [[8u8; 8]; 256];
+    let mut mask = 0;
+    while mask < 256 {
+        let mut body = [8u8; 8];
+        let mut c = 0;
+        while c < 8 {
+            if (mask >> c) & 1 == 0 {
+                body[c] = c as u8;
+            }
+            c += 1;
+        }
+        // Relax along open edges until nothing changes; eight rounds cover
+        // the longest path through a cube.
+        let mut round = 0;
+        while round < 8 {
+            let mut edge = 0;
+            while edge < 12 {
+                let (a, b) = EDGE_VERTEX_INDICES[edge];
+                if body[a] < 8 && body[b] < 8 {
+                    let m = if body[a] < body[b] { body[a] } else { body[b] };
+                    body[a] = m;
+                    body[b] = m;
+                }
+                edge += 1;
+            }
+            round += 1;
+        }
+        table[mask] = body;
+        mask += 1;
     }
     table
 };
@@ -337,11 +407,12 @@ mod tests {
 
     #[test]
     fn vert_t_covers_the_surface_range() {
-        // Lower corner inside, upper outside: the height lies in [0, 1).
+        // Lower corner inside, upper outside: the height lies strictly inside
+        // the edge.
         for lo in W_ISO + 1..=W_MAX {
             for hi in 0..=W_ISO {
                 let t = VERT_T[(lo + hi) as usize];
-                assert!((0.0..1.0).contains(&t), "o_lo {lo}, o_hi {hi}: t = {t}");
+                assert!(t > 0.0 && t < 1.0, "b_lo {lo}, b_hi {hi}: t = {t}");
             }
         }
         // One unit is one step, exactly.
@@ -376,6 +447,38 @@ mod tests {
                     assert!(n.y >= 0.0, "case {q:04b}: triangle {tri:?} faces down");
                     assert!(n.x.abs() < 1e-6 && n.z.abs() < 1e-6, "flat in top view");
                 }
+            }
+        }
+    }
+
+    /// A body is only ever open corners, joined along edges; the corner the
+    /// terrain walls off on three sides is its own body.
+    #[test]
+    fn corner_bodies_follow_open_edges() {
+        assert_eq!(CORNER_BODY[0], [0; 8]);
+        assert_eq!(CORNER_BODY[255], [8; 8]);
+        // Solid 0, 3, 4, 5: corner 1 is sealed off from 2, 6, 7.
+        let solid = 0b0011_1001;
+        assert_eq!(CORNER_BODY[solid], [8, 1, 2, 8, 8, 8, 2, 2]);
+        // Only a face diagonal open (1 and 2 on z = 0, with 0 and 3 solid,
+        // and the whole far face solid): two bodies, not one.
+        let solid = 0b1111_1001;
+        assert_eq!(CORNER_BODY[solid], [8, 1, 2, 8, 8, 8, 8, 8]);
+    }
+
+    #[test]
+    fn face_segs_apart_differ_only_on_diagonals() {
+        for mask in 0..16 {
+            if mask == 0b0101 || mask == 0b1010 {
+                assert_ne!(FACE_SEGS_APART[mask], FACE_SEGS[mask]);
+                // Each segment cuts off an inside corner: corner i sits
+                // between edges i - 1 and i.
+                for &(a, b) in &FACE_SEGS_APART[mask].segs[..2] {
+                    assert_eq!(a, (b + 3) % 4);
+                    assert_eq!((mask >> b) & 1, 1, "mask {mask:04b}: cuts off outside corner {b}");
+                }
+            } else {
+                assert_eq!(FACE_SEGS_APART[mask], FACE_SEGS[mask], "mask {mask:04b}");
             }
         }
     }
