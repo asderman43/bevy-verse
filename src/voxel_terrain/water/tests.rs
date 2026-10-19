@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use bevy::math::{vec3, Vec3};
 
 use super::{
-    mesher::{below_ledge, extract_with_overlap, slot_height, Corners},
+    mesher::{below_ledge, extract_with_overlap, slot_height, Corners, Rows},
     presets,
     tables::{MS_TRIS, VERT_EDGE, VERT_T},
     W_ISO, W_MAX,
@@ -597,4 +597,20 @@ fn a_sealed_pocket_and_the_pool_above_are_meshed_apart() {
     }
     // The pool: a pentagon over slots 0, 1, 3. The pocket: a triangle on slot 2.
     assert_eq!(surface.triangle_count(), 3 + 1);
+}
+
+/// The row pass counts exactly the triangles emission builds, zero-area ones
+/// included (`extract_with_overlap` debug-asserts that on every call, so every
+/// test here checks it). Where no shoreline point lands on a dry corner --
+/// unlike the basin, which drops 8 -- none are dropped and the output is
+/// exactly as long as counted.
+#[test]
+fn the_triangle_count_is_exact() {
+    for (name, (solid, water)) in [
+        ("A", presets::all().into_iter().find(|p| p.name == "A: open water").unwrap().buffers()),
+        ("level step", settled(6, |_, _| S_MAX as i32, |x, _| if x < 3 { 34 } else { 49 })),
+    ] {
+        let counted = Rows::scan(&solid, &water, true).count_triangles();
+        assert_eq!(mesh(&solid, &water, true).triangle_count(), counted, "{name}");
+    }
 }

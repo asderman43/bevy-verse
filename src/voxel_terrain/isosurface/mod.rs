@@ -429,15 +429,26 @@ pub(crate) fn terrain_vertex(
 ) -> Vec3 {
     let last = buffer.size() - 2;
     let (cx, cy, cz) = (x.min(last), y.min(last), z.min(last));
-    let origin = (axis, x - cx, y - cy, z - cz);
-    let edge = (0..12)
-        .find(|&e| tables::EDGE_AXIS_ORIGIN[e] == origin)
-        .expect("every axis and corner offset is some table edge");
+    let edge = EDGE_AT[axis][(x - cx) | (y - cy) << 1 | (z - cz) << 2];
 
     let corners = buffer.cell_corners(cx, cy, cz);
     let cell = vec3(cx as f32, cy as f32, cz as f32);
     place_at(cell, edge, edge_t(edge, &corners, interpolate))
 }
+
+/// The table edge along each axis from each corner offset (x bit 0, y bit 1,
+/// z bit 2), for [`terrain_vertex`]. An offset along the axis itself never
+/// occurs and is left at 0.
+const EDGE_AT: [[usize; 8]; 3] = {
+    let mut table = [[0; 8]; 3];
+    let mut edge = 0;
+    while edge < 12 {
+        let (axis, ox, oy, oz) = tables::EDGE_AXIS_ORIGIN[edge];
+        table[axis][ox | oy << 1 | oz << 2] = edge;
+        edge += 1;
+    }
+    table
+};
 
 /// The smooth normal of the vertex `t` of the way along `edge`, in the cell
 /// whose lowest corner is `(x, y, z)`: the density gradient, blended between

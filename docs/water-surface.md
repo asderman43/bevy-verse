@@ -553,13 +553,26 @@ conserved between steps apart from sources and sinks.
   visible from underwater. Normals as in §6.1.
 - **Chunk borders** need the same apron as the terrain. The terrain doesn't have
   one yet: its gradient is one-sided at buffer faces.
-- **Skipping cells.** Most of the speed comes from not visiting cells at all:
-  - keep a per-chunk water count, so dry chunks are skipped entirely;
-  - keep a per-column wet y-range, so only `[min − 1, max + 1]` is visited;
-  - remesh only chunks the simulation marks dirty.
+- **Skipping cells (done 2026-10-19).** `mesher.rs` runs three passes, after
+  flying edges: a chunk with no water returns at once; each X row of vertical
+  edges becomes a `u64` of which edges carry the surface (each edge decided
+  once, a row with no water skipped in one test), with the rock packed the same
+  way; each cell's `Q` and triangle count then come from bit operations on
+  those rows, and emission visits only cells with a surface, into buffers sized
+  by the count. The count is exact before zero-area triangles are dropped, and
+  debug builds assert it. Output is bit-identical to the cell-by-cell version.
+  `cargo run --release --example water_bench`, 32^3 unless noted:
 
-  The scan's row bitmasks could also be reused: pack `M` per row in a `u64`, and
-  a row with no wet sample is skipped in one test.
+  | field | cell by cell | rows | terrain on the same rock |
+  |---|---|---|---|
+  | dry hills | 0.74 ms | 0.01 ms | 0.26 ms |
+  | lake | 0.74 ms | 0.07 ms | 0.25 ms |
+  | flooded | 0.80 ms | 0.15 ms | 0.26 ms |
+  | noise, water in every sample | 5.0 ms | 4.7 ms | 1.66 ms |
+  | lake, 64^3 | 6.1 ms | 0.43 ms | 1.77 ms |
+
+  Still open: a per-chunk wet count kept by the simulation (instead of the
+  scan for "any water"), and remeshing only chunks the simulation marks dirty.
 - **Cost per cell.** Open water costs four adds and four table reads.
   Shoreline points cost one division and two terrain vertices each, and only
   occur in the thin band of shore cells.
