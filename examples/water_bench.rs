@@ -124,14 +124,15 @@ fn bench(name: &str, (solid, water): (VoxelBuffer, VoxelBuffer)) {
         "\n{name}  ({size}^3, {cells} cells, {:.1}% of samples wet, {runs} runs)",
         100.0 * wet as f64 / size.pow(3) as f64,
     );
-    println!("  {:<22} {:>10} {:>10} {:>12}", "", "mean", "best", "triangles");
+    println!("  {:<22} {:>10} {:>10} {:>12} {:>10}", "", "mean", "best", "triangles", "vertices");
     for (label, timing) in [("water", &w), ("terrain (flying edges)", &t)] {
         println!(
-            "  {:<22} {:>10} {:>10} {:>12}",
+            "  {:<22} {:>10} {:>10} {:>12} {:>10}",
             label,
             format!("{:.3}ms", timing.mean.as_secs_f64() * 1000.0),
             format!("{:.3}ms", timing.best.as_secs_f64() * 1000.0),
             timing.surface.triangle_count(),
+            timing.surface.vertex_count(),
         );
     }
     println!(

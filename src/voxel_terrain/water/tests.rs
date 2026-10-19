@@ -143,6 +143,18 @@ fn basins_at_every_level() {
     }
 }
 
+/// Triangles with area; zero-area ones are kept in the output.
+fn real_triangles(surface: &Surface) -> usize {
+    surface
+        .indices
+        .chunks(3)
+        .filter(|t| {
+            let [a, b, c] = [0, 1, 2].map(|k| surface.positions[t[k] as usize]);
+            (b - a).cross(c - a).try_normalize().is_some()
+        })
+        .count()
+}
+
 fn bits(p: Vec3) -> [u32; 3] {
     p.to_array().map(f32::to_bits)
 }
@@ -329,7 +341,7 @@ fn ledges() {
     // so the pentagon closes up into a quad. Above, one flat quad.
     assert_eq!(mesh_preset("F: ledge dips in").triangle_count(), 3);
     let touches = mesh_preset("F: ledge touches");
-    assert_eq!(touches.triangle_count(), 2);
+    assert_eq!(real_triangles(&touches), 2);
     assert!(touches.positions.iter().any(|p| *p == vec3(0.0, pool, 1.0)));
     let above = mesh_preset("F: ledge above");
     assert_eq!(above.triangle_count(), 2);
@@ -501,6 +513,10 @@ fn interior_face_edges(
     let mut edges = HashMap::new();
     for t in surface.indices.chunks(3) {
         let [a, b, c] = [0, 1, 2].map(|k| surface.positions[t[k] as usize]);
+        // A zero-area triangle covers nothing.
+        if (b - a).cross(c - a).try_normalize().is_none() {
+            continue;
+        }
         for (p, q) in [(a, b), (b, c), (c, a)] {
             let in_plane = (0..3).any(|axis| p[axis] == q[axis] && interior(p[axis]));
             if in_plane && p != q && (on_wet_column(p) || on_wet_column(q)) {
@@ -599,37 +615,58 @@ fn a_sealed_pocket_and_the_pool_above_are_meshed_apart() {
     assert_eq!(surface.triangle_count(), 3 + 1);
 }
 
-/// The row pass counts exactly the triangles emission builds, zero-area ones
-/// included (`extract_with_overlap` debug-asserts that on every call, so every
-/// test here checks it). Where no shoreline point lands on a dry corner --
-/// unlike the basin, which drops 8 -- none are dropped and the output is
-/// exactly as long as counted.
+/// The row pass counts exactly what emission builds: every triangle, and
+/// every vertex -- one per surface edge, one per shoreline point -- each
+/// written once and referenced. (`extract_with_overlap` debug-asserts the
+/// triangle count and that every vertex was written on every call.)
 #[test]
-fn the_triangle_count_is_exact() {
-    for (name, (solid, water)) in [
-        ("A", presets::all().into_iter().find(|p| p.name == "A: open water").unwrap().buffers()),
-        ("level step", settled(6, |_, _| S_MAX as i32, |x, _| if x < 3 { 34 } else { 49 })),
-    ] {
-        let counted = Rows::scan(&solid, &water, true).count_triangles();
-        assert_eq!(mesh(&solid, &water, true).triangle_count(), counted, "{name}");
+fn the_counts_are_exact_and_every_vertex_is_used() {
+    let mut fields: Vec<(String, (VoxelBuffer, VoxelBuffer))> =
+        presets::all().into_iter().map(|p| (p.name.clone(), p.buffers())).collect();
+    fields.push(("basin".into(), basin(12)));
+    fields.push(("level step".into(), settled(6, |_, _| S_MAX as i32, |x, _| if x < 3 { 34 } else { 49 })));
+    for level in [2 * S_MAX as i32 + 9, 3 * S_MAX as i32, 4 * S_MAX as i32 + 8] {
+        fields.push((format!("bowl at {level}"), bowl(12, 0.11, level)));
+    }
+
+    for (name, (solid, water)) in fields {
+        for interpolate in [true, false] {
+            let rows = Rows::scan(&solid, &water, interpolate);
+            let counts = rows.count();
+            let surface = mesh(&solid, &water, interpolate);
+            assert_eq!(surface.triangle_count(), counts.triangles, "{name}");
+            assert_eq!(
+                surface.vertex_count(),
+                rows.surface_vertices + counts.shore_keys.len(),
+                "{name}",
+            );
+            let mut used = vec![false; surface.vertex_count()];
+            for &i in &surface.indices {
+                used[i as usize] = true;
+            }
+            assert!(used.iter().all(|&u| u), "{name}: a vertex no triangle uses");
+        }
     }
 }
 
-/// Solid 3, 4, 5; water inside at corner 0, a little at corner 1 (unsettled,
-/// lower). On face z = 0 the inside corners are 0 (water) and 3 (rock), on a
-/// diagonal. The fallback must keep them apart: the water steps down along the
-/// bottom edge toward corner 1, not up the top edge toward the rock.
+/// Welded: a vertex on a vertical edge is one vertex, however many cells use
+/// it, and the mesh is far smaller than one vertex per triangle corner.
+/// (Shoreline points can still coincide: where the level lands on a dry
+/// corner's drawn ground, the two faces meeting there each have their own.)
 #[test]
-fn the_fallback_joins_water_to_water_not_to_rock() {
-    let surface = mesh_preset("water beside a ledge, unsettled");
-    assert!(!surface.is_empty());
+fn shared_vertices_are_welded() {
+    let (solid, water) = basin(12);
+    let surface = mesh(&solid, &water, true);
+    let surface_vertices = Rows::scan(&solid, &water, true).surface_vertices;
+    let mut on_edges: Vec<[u32; 3]> =
+        surface.positions[..surface_vertices].iter().map(|&p| bits(p)).collect();
+    on_edges.sort();
+    on_edges.dedup();
+    assert_eq!(on_edges.len(), surface_vertices, "a surface vertex was duplicated");
     assert!(
-        surface.positions.iter().all(|p| p.y < 0.5),
-        "the water climbs toward the rock: {:?}",
-        surface.positions
+        surface.vertex_count() * 2 < surface.indices.len(),
+        "{} vertices for {} corners",
+        surface.vertex_count(),
+        surface.indices.len(),
     );
-    // The fallback point: on the bottom edge from corner 0 (b = 10) to
-    // corner 1 (b = 3), where the fill falls through 7.5.
-    let expected = vec3(2.5 / 7.0, 0.0, 0.0);
-    assert!(surface.positions.iter().any(|&p| (p - expected).length() < 1e-6));
 }

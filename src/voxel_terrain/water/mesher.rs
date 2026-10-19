@@ -8,17 +8,23 @@
 //!    skipped in one test. The rock is packed the same way, a bit per solid
 //!    sample.
 //! 2. **Count.** A cell's surface case `Q` is four bits out of the rows around
-//!    it, so finding the cells with any surface, and counting their triangles,
-//!    is bit operations; no samples are read.
+//!    it, so finding the cells with any surface, and counting their triangles
+//!    and shoreline points, is bit operations; no samples are read.
 //! 3. **Emit.** Only those cells are visited, into buffers allocated at the
 //!    counted size.
 //!
-//! Unwelded, like `marching_cubes.rs`: three fresh vertices per triangle, all
-//! carrying the triangle's face normal. The count is exact before zero-area
-//! triangles are dropped, which only the positions can reveal, so the output
-//! never reallocates and is at most a few triangles short of its capacity.
-
-use std::cell::Cell;
+//! **Welded.** Every vertex is written once and shared by every triangle that
+//! uses it, in every cell:
+//!
+//! - a surface vertex per vertical edge carrying the surface, numbered by its
+//!   bit's rank in the rows: a per-row prefix count plus a popcount;
+//! - a shoreline point per vertical face and wet edge on it, numbered by its
+//!   key's rank among the keys the count pass collected.
+//!
+//! Each vertex's normal is the area-weighted sum of its triangles' face
+//! normals, exactly +Y on flat water. Zero-area triangles -- two shoreline
+//! points on the same terrain vertex -- are kept: dropping one could leave a
+//! vertex nothing references, and they add nothing to the normals.
 
 use bevy::math::{vec3, Vec3};
 
@@ -31,7 +37,6 @@ use super::{
     SHORE_OVERLAP, W_EPS, W_ISO, W_MAX,
 };
 use crate::voxel_terrain::isosurface::{
-    face_normal,
     tables::{EDGE_AXIS_ORIGIN, EDGE_VERTEX_INDICES, VERTEX_POSITIONS},
     terrain_vertex, Interpolate, Surface, VoxelBuffer, ISO, MAX_SIZE, S_MAX,
 };
@@ -81,18 +86,21 @@ pub fn extract_with_overlap(
     }
 
     let rows = Rows::scan(solid, water, interpolate);
-    let triangles = rows.count_triangles();
-    let mut surface = Surface {
-        positions: Vec::with_capacity(3 * triangles),
-        normals: Vec::with_capacity(3 * triangles),
-        indices: Vec::with_capacity(3 * triangles),
-    };
+    let counts = rows.count();
+    let vertices = rows.surface_vertices + counts.shore_keys.len();
 
+    let mut out = Out {
+        positions: vec![Vec3::NAN; vertices],
+        normals: vec![Vec3::ZERO; vertices],
+        indices: Vec::with_capacity(3 * counts.triangles),
+        shore_written: vec![false; counts.shore_keys.len()],
+    };
     let mesher = Mesher {
         solid,
         interpolate,
         overlap,
-        dropped: Cell::new(0),
+        rows: &rows,
+        shore_keys: &counts.shore_keys,
     };
     let cells = size - 1;
     for z in 0..cells {
@@ -102,17 +110,37 @@ pub fn extract_with_overlap(
                 let x = row.trailing_zeros() as usize;
                 row &= row - 1;
                 let corners = Corners::load(solid, water, (x, y, z));
-                mesher.cell(&mut surface, (x, y, z), &corners, rows.cell_q(x, y, z));
+                mesher.cell(&mut out, (x, y, z), &corners, rows.cell_q(x, y, z));
             }
         }
     }
 
-    debug_assert_eq!(
-        surface.triangle_count() + mesher.dropped.get(),
-        triangles,
-        "the row pass counted a different number of triangles than were built",
+    debug_assert_eq!(out.indices.len(), 3 * counts.triangles, "triangles built != counted");
+    debug_assert!(
+        out.positions.iter().all(|p| p.is_finite()),
+        "a counted vertex was never written",
     );
-    surface
+
+    // Flat water is exactly up, rather than up to a rounding step.
+    let normals = out
+        .normals
+        .into_iter()
+        .map(|n| if n.x == 0.0 && n.z == 0.0 { Vec3::Y } else { n.normalize_or(Vec3::Y) })
+        .collect();
+    Surface {
+        positions: out.positions,
+        normals,
+        indices: out.indices,
+    }
+}
+
+/// What pass 2 finds.
+pub(crate) struct Counts {
+    /// Exactly the triangles emission builds.
+    pub triangles: usize,
+    /// Every shoreline point some cell needs, sorted and unique; a point's
+    /// index among them is its vertex number after the surface vertices.
+    pub shore_keys: Vec<u32>,
 }
 
 /// Passes 1 and 2: the rock and the surface edges as row bitmasks.
@@ -123,6 +151,11 @@ pub(crate) struct Rows {
     /// Bit `x` of row `y + z·size`: the vertical edge from `(x, y, z)` up to
     /// `(x, y + 1, z)` carries the surface. The top row is unused.
     surface: Vec<u64>,
+    /// The vertex number of each row's first surface vertex: the surface
+    /// vertices of all rows before it.
+    first_vertex: Vec<u32>,
+    /// Surface vertices in all: one per set bit in `surface`.
+    pub surface_vertices: usize,
 }
 
 impl Rows {
@@ -169,11 +202,28 @@ impl Rows {
             }
         }
 
+        let mut first_vertex = Vec::with_capacity(surface.len());
+        let mut surface_vertices = 0;
+        for &mask in &surface {
+            first_vertex.push(surface_vertices as u32);
+            surface_vertices += mask.count_ones() as usize;
+        }
+
         Rows {
             size,
             solid: solid_rows,
             surface,
+            first_vertex,
+            surface_vertices,
         }
+    }
+
+    /// The vertex number of the surface vertex on the vertical edge up from
+    /// sample `(x, y, z)`, which must carry the surface.
+    fn surface_vertex(&self, x: usize, y: usize, z: usize) -> u32 {
+        let row = y + z * self.size;
+        let below = self.surface[row] & ((1u64 << x) - 1);
+        self.first_vertex[row] + below.count_ones()
     }
 
     /// Cells of row `(y, z)` with any surface edge, bit per cell.
@@ -201,11 +251,11 @@ impl Rows {
         })
     }
 
-    /// The exact number of triangles emission will build, before any
-    /// zero-area ones are dropped.
-    pub fn count_triangles(&self) -> usize {
+    /// Pass 2: the triangles and shoreline points emission will build.
+    pub fn count(&self) -> Counts {
         let cells = self.size - 1;
         let mut triangles = 0;
+        let mut shore_keys = Vec::new();
         for z in 0..cells {
             for y in 0..cells {
                 let mut row = self.cells_with_surface(y, z);
@@ -213,17 +263,60 @@ impl Rows {
                     let x = row.trailing_zeros() as usize;
                     row &= row - 1;
                     let q = self.cell_q(x, y, z);
-                    triangles += if q.count_ones() == 1 {
-                        MS_TRIS[q].count
-                    } else {
-                        let solid = self.cell_solid(x, y, z);
-                        bodies(q, solid).map(|group| MS_TRIS[group].count).sum()
-                    };
+                    let solid = if q.count_ones() == 1 { 0 } else { self.cell_solid(x, y, z) };
+                    for group in bodies(q, solid) {
+                        triangles += MS_TRIS[group].count;
+                        for (f, k_wet) in shore_faces(group) {
+                            shore_keys.push(shore_key(self.size, (x, y, z), f, k_wet));
+                        }
+                    }
                 }
             }
         }
-        triangles
+        // Two cells share each face; both asked for its point.
+        shore_keys.sort_unstable();
+        shore_keys.dedup();
+        Counts {
+            triangles,
+            shore_keys,
+        }
     }
+}
+
+/// The faces of a group of surface slots that get a shoreline point, with the
+/// group's slot on each: the faces with exactly one of their two slots in it.
+fn shore_faces(q: usize) -> impl Iterator<Item = (usize, usize)> {
+    (0..4).filter_map(move |f| {
+        let next = (f + 1) % 4;
+        match ((q >> f) & 1, (q >> next) & 1) {
+            (1, 0) => Some((f, f)),
+            (0, 1) => Some((f, next)),
+            _ => None,
+        }
+    })
+}
+
+/// Which of a vertical face's two vertical edges is slot `k_wet` of face `f`:
+/// 0 for the one at the face's lower x or z, 1 for the other. Face 0 holds
+/// slots 0 and 1 along x, face 1 slots 2 and 1 along z, face 2 slots 3 and 2
+/// along x, face 3 slots 3 and 0 along z.
+const SIDE: [[u32; 2]; 4] = [[0, 1], [1, 0], [1, 0], [0, 1]];
+
+/// The shoreline point of face `f` of `cell`, at the water level of its slot
+/// `k_wet`, as a key both cells sharing the face compute alike: the face's
+/// lowest sample, whether it spans x or z, and which of its vertical edges is
+/// wet. Faces 0 and 2 are the cell's z + 1 and z faces, spanning x; faces 1
+/// and 3 its x + 1 and x faces, spanning z.
+fn shore_key(size: usize, (x, y, z): (usize, usize, usize), f: usize, k_wet: usize) -> u32 {
+    let (base, spans_z) = match f {
+        0 => ((x, z + 1), 0),
+        1 => ((x + 1, z), 1),
+        2 => ((x, z), 0),
+        _ => ((x, z), 1),
+    };
+    let side = SIDE[f][(k_wet != f) as usize];
+    let sample = base.0 + y * size + base.1 * size * size;
+    ((sample * 2 + spans_z) * 2) as u32 + side
 }
 
 /// Splits the slots in `q` into groups that carry the same body of water
@@ -422,19 +515,32 @@ pub(crate) fn below_ledge(n: u8, s_lo: u8, s_hi: u8, interpolate: Interpolate) -
     }
 }
 
+/// The output as it is built: positions written once at their counted
+/// numbers, normals summed from the triangles around each vertex.
+struct Out {
+    positions: Vec<Vec3>,
+    normals: Vec<Vec3>,
+    indices: Vec<u32>,
+    shore_written: Vec<bool>,
+}
+
 struct Mesher<'a> {
     solid: &'a VoxelBuffer,
     interpolate: Interpolate,
     overlap: f32,
-    /// Zero-area triangles left out, so the count can be checked.
-    dropped: Cell<usize>,
+    rows: &'a Rows,
+    shore_keys: &'a [u32],
 }
 
 impl Mesher<'_> {
     /// Meshes one cell whose surface case, from the row pass, is `q`.
-    fn cell(&self, out: &mut Surface, cell: (usize, usize, usize), c: &Corners, q: usize) {
-        // 1. The surface vertex on each slot in `q`.
+    fn cell(&self, out: &mut Out, cell: (usize, usize, usize), c: &Corners, q: usize) {
+        let (x, y, z) = cell;
+
+        // 1. The surface vertex on each slot in `q`. Every cell around the
+        // edge writes the same bits to the same number.
         let mut v = [Vec3::ZERO; 4];
+        let mut v_index = [0u32; 4];
         for k in 0..4 {
             if (q >> k) & 1 == 1 {
                 let t = slot_height(c, k, self.interpolate);
@@ -443,52 +549,58 @@ impl Mesher<'_> {
                 // same two numbers, so they agree bit for bit.
                 let base = corner(cell, VERT_EDGE[k].0);
                 v[k] = vec3(base.x, base.y + t.unwrap_or(0.0), base.z);
+                let at = VERTEX_POSITIONS[VERT_EDGE[k].0];
+                v_index[k] = self.rows.surface_vertex(x + at.x as usize, y, z + at.z as usize);
+                out.positions[v_index[k] as usize] = v[k];
             }
         }
 
         for group in bodies(q, c.solid) {
-            self.polygon(out, cell, c, group, &v);
+            self.polygon(out, cell, c, group, &v, &v_index);
         }
     }
 
     /// The surface over the slots in `q`, which all carry one body of water.
     fn polygon(
         &self,
-        out: &mut Surface,
+        out: &mut Out,
         cell: (usize, usize, usize),
         c: &Corners,
         q: usize,
         v: &[Vec3; 4],
+        v_index: &[u32; 4],
     ) {
-        // 2. A shoreline point on each face with exactly one surface edge.
-        let mut f_points = [Vec3::ZERO; 4];
-        for f in 0..4 {
-            let next = (f + 1) % 4;
-            let (a, b) = ((q >> f) & 1, (q >> next) & 1);
-            if a != b {
-                let k_wet = if a == 1 { f } else { next };
-                f_points[f] = self.shore_point(cell, c, f, k_wet, v);
+        // 2. A shoreline point on each face with exactly one surface edge,
+        // computed by the first cell to need it.
+        let mut f_index = [0u32; 4];
+        for (f, k_wet) in shore_faces(q) {
+            let key = shore_key(self.rows.size, cell, f, k_wet);
+            let rank = self
+                .shore_keys
+                .binary_search(&key)
+                .expect("the count pass collected every shoreline point");
+            if !out.shore_written[rank] {
+                out.shore_written[rank] = true;
+                let at = self.rows.surface_vertices + rank;
+                out.positions[at] = self.shore_point(cell, c, f, k_wet, v);
             }
+            f_index[f] = (self.rows.surface_vertices + rank) as u32;
         }
 
-        // 3. Triangles, each with its own face normal. Two shoreline points
-        // can land on the same terrain vertex -- the level exactly at a dry
-        // corner's drawn ground -- and the triangle between them has no area;
-        // it is skipped.
+        // 3. Triangles, and their face normals onto their corners, weighted by
+        // area: the cross product's length is twice it.
         let case = MS_TRIS[q];
         for tri in &case.tris[..case.count] {
-            let [p0, p1, p2] = tri.map(|slot| match slot {
-                Slot::V(k) => v[k],
-                Slot::F(f) => f_points[f],
+            let corners = tri.map(|slot| match slot {
+                Slot::V(k) => v_index[k],
+                Slot::F(f) => f_index[f],
             });
-            let Some(normal) = face_normal(p0, p1, p2) else {
-                self.dropped.set(self.dropped.get() + 1);
-                continue;
-            };
-            let first = out.positions.len() as u32;
-            out.positions.extend([p0, p1, p2]);
-            out.normals.extend([normal; 3]);
-            out.indices.extend([first, first + 1, first + 2]);
+            let [a, b, c] = corners.map(|i| out.positions[i as usize]);
+            let normal = (b - a).cross(c - a);
+            for i in corners {
+                out.normals[i as usize] += normal;
+            }
+            out.indices.extend(corners);
         }
     }
 

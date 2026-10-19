@@ -200,7 +200,7 @@ fn setup(
             Mesh3d(meshes.add(Mesh::from(Cuboid::default()))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::srgba(0.55, 0.4, 0.25, 0.55),
-                alpha_mode: AlphaMode::Blend,
+                alpha_mode: AlphaMode::Opaque,
                 cull_mode: None,
                 double_sided: true,
                 ..default()

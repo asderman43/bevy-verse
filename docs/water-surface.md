@@ -415,18 +415,32 @@ terrain mesh has.
 example, from the endpoint with the smaller coordinates). Both cells sharing the
 face then compute the same `P`.
 
-**Welding.** As with the terrain, welding decides the shading (§6.1): unwelded
-water is faceted wherever it slopes, and welded water can be smooth. Start
-unwelded like `marching_cubes.rs`. Add welding with an ownership rule the way
-flying edges does: vertical edges owned like its Y slot, plus one owner per face
-for the `F` points.
+**Welding (done 2026-10-19).** Every vertex is written once and shared by
+every triangle that uses it, in every cell:
+
+- a surface vertex per vertical edge carrying the surface, numbered by its
+  bit's rank in the row masks (a per-row prefix count plus a popcount), as
+  flying edges numbers its vertices;
+- a shoreline point per vertical face and wet edge on it: the count pass
+  collects a key for each (the face's lowest sample, whether it spans x or z,
+  which of its two vertical edges is wet), and a point's vertex number is its
+  key's rank among them. The first cell to need it computes it.
+
+Counts are exact: `surface edges + shoreline keys` vertices and the table's
+triangles, all allocated up front. Zero-area triangles are kept (dropping one
+could leave a vertex unreferenced). Two shoreline points can share a position
+where the level lands on a dry corner's drawn ground, one per face. Triangles
+with area are bit-identical to the unwelded mesher's. About 5× fewer vertices
+on realistic water (32^3 lake: 135 instead of 627).
 
 ### 6.1 Normals
 
-> **Deferred (2026-10-13).** Waves are planned, and they will most likely move
-> the surface and work out its normals in the shader, which would make mesh
-> normals moot. Until then, emit unwelded face normals (one cross product per
-> triangle) and don't build the smooth option below.
+> **Done (2026-10-19), the simple way:** each welded vertex's normal is the
+> area-weighted sum of its triangles' face normals, normalised; exactly +Y on
+> flat water. Waves may still move normals into the shader. At chunk borders
+> a vertex only sees its own chunk's triangles, so sloped water can shade a
+> seam there until chunks have an apron. The height-field gradient below is
+> the alternative if that matters.
 
 The surface is **not** always flat. Each vertex's height comes from its own
 vertical edge, from that edge's `b_lo + b_hi` through the volume-of-fluid
@@ -613,6 +627,7 @@ terrain's own tests.
 | `a_sealed_pocket_and_the_pool_above_are_meshed_apart`, `corner_bodies_follow_open_edges` | two bodies in one cell, each flat at its own level |
 | `the_fallback_joins_water_to_water_not_to_rock`, `face_segs_apart_differ_only_on_diagonals` | on a water/rock diagonal the fallback steps toward the water |
 | examples A–F, `surface_cases_give_their_table_shapes`, `every_preset_meshes` | §7 and the 16 cases |
+| `the_counts_are_exact_and_every_vertex_is_used`, `shared_vertices_are_welded` | exact vertex and triangle counts, every vertex referenced, surface vertices unique |
 | `face_segs_match_the_terrain` | for all 256 cases × 4 faces, `FACE_SEGS` gives the terrain's in-face segments |
 | `ms_tris_are_convex_and_face_up`, `diagonal_cases_do_not_bridge`, `vert_t_covers_the_surface_range` | tables |
 
