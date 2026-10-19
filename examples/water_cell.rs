@@ -30,7 +30,8 @@ use bevy_panorbit_camera::{PanOrbitCamera, PanOrbitCameraPlugin};
 use bevy_verse::voxel_terrain::{
     isosurface::{flying_edges, tables::VERTEX_POSITIONS, Surface, VoxelBuffer, S_MAX},
     water::{
-        mesher::{describe_cell, extract_with_overlap},
+        debug::describe_cell,
+        mesher::extract_with_overlap,
         presets::{self, Preset},
         tables::VERT_EDGE,
         SHORE_OVERLAP,

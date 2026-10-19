@@ -9,6 +9,7 @@
 
 use crate::voxel_terrain::isosurface::{ISO, S_MAX};
 
+pub mod debug;
 pub mod mesher;
 pub mod presets;
 pub mod tables;
