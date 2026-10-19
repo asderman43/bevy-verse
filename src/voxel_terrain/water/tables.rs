@@ -134,6 +134,33 @@ pub const FACE_SEGS: [FaceSegs; 16] = {
     table
 };
 
+/// [`FACE_SEGS`] with the diagonal cases resolved the other way: each segment
+/// cuts off an **inside** corner, so the two inside corners stay apart.
+///
+/// For the occupancy fallback (§3.3), where the inside corners on a diagonal
+/// face are water on one side and rock on the other. Water joins water, not
+/// rock, so its contour runs to its own outside neighbours rather than across
+/// to the rock. Identical to [`FACE_SEGS`] everywhere but the two diagonals.
+pub const FACE_SEGS_APART: [FaceSegs; 16] = {
+    let mut table = FACE_SEGS;
+    let mut mask = 0;
+    while mask < 16 {
+        if mask == 0b0101 || mask == 0b1010 {
+            let mut n = 0;
+            let mut i = 0;
+            while i < 4 {
+                if (mask >> i) & 1 == 1 {
+                    table[mask].segs[n] = ((i + 3) % 4, i);
+                    n += 1;
+                }
+                i += 1;
+            }
+        }
+        mask += 1;
+    }
+    table
+};
+
 /// The face-local inside mask of face `f`, from a cell's 8-bit corner mask.
 pub const fn face_bits(cell_mask: u8, f: usize) -> usize {
     let mut bits = 0;
@@ -437,6 +464,23 @@ mod tests {
         // and the whole far face solid): two bodies, not one.
         let solid = 0b1111_1001;
         assert_eq!(CORNER_BODY[solid], [8, 1, 2, 8, 8, 8, 8, 8]);
+    }
+
+    #[test]
+    fn face_segs_apart_differ_only_on_diagonals() {
+        for mask in 0..16 {
+            if mask == 0b0101 || mask == 0b1010 {
+                assert_ne!(FACE_SEGS_APART[mask], FACE_SEGS[mask]);
+                // Each segment cuts off an inside corner: corner i sits
+                // between edges i - 1 and i.
+                for &(a, b) in &FACE_SEGS_APART[mask].segs[..2] {
+                    assert_eq!(a, (b + 3) % 4);
+                    assert_eq!((mask >> b) & 1, 1, "mask {mask:04b}: cuts off outside corner {b}");
+                }
+            } else {
+                assert_eq!(FACE_SEGS_APART[mask], FACE_SEGS[mask], "mask {mask:04b}");
+            }
+        }
     }
 
     #[test]

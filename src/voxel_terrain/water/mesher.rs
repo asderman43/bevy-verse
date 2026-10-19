@@ -25,6 +25,7 @@ use bevy::math::{vec3, Vec3};
 use super::{
     tables::{
         face_bits, Slot, CORNER_BODY, FACE_EDGES, FACE_EDGE_NEXT, FACE_EDGE_OWN, FACE_SEGS,
+        FACE_SEGS_APART,
         MS_TRIS, RECIP, VERT_EDGE, VERT_T,
     },
     SHORE_OVERLAP, W_EPS, W_ISO, W_MAX,
@@ -570,7 +571,8 @@ impl Mesher<'_> {
 }
 
 /// The fallback shoreline point (§3.3): where the occupancy contour that
-/// leaves the wet edge crosses the face's next edge. It is placed the way the
+/// leaves the wet edge crosses the face's next edge. On a diagonal face whose
+/// inside corners are water and rock, the contour keeps them apart. It is placed the way the
 /// terrain places its own vertices, on the bottom fill instead of the rock: by
 /// the volume formula on a vertical edge, linearly to 7.5 on a horizontal one.
 /// It depends only on that edge's two corners, so the cell across a level step
@@ -580,7 +582,13 @@ impl Mesher<'_> {
 /// a surface edge kept by the ledge rule.
 fn occupancy_crossing(cell: (usize, usize, usize), c: &Corners, f: usize, k_wet: usize) -> Option<Vec3> {
     let wet_edge = if k_wet == f { FACE_EDGE_OWN } else { FACE_EDGE_NEXT };
-    let segs = FACE_SEGS[face_bits(c.inside, f)];
+    // On a diagonal face whose two inside corners are water and rock, keep
+    // them apart: the water's contour runs to its own neighbours, not across
+    // to the rock. Decided from the face alone, so the cell across it agrees.
+    let inside = face_bits(c.inside, f);
+    let solid = face_bits(c.solid, f);
+    let mixed = (inside == 0b0101 || inside == 0b1010) && solid != 0 && solid != inside;
+    let segs = if mixed { FACE_SEGS_APART[inside] } else { FACE_SEGS[inside] };
     let other = segs.segs[..segs.count].iter().find_map(|&(a, b)| match () {
         _ if a == wet_edge => Some(b),
         _ if b == wet_edge => Some(a),

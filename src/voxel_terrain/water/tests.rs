@@ -614,3 +614,22 @@ fn the_triangle_count_is_exact() {
         assert_eq!(mesh(&solid, &water, true).triangle_count(), counted, "{name}");
     }
 }
+
+/// Solid 3, 4, 5; water inside at corner 0, a little at corner 1 (unsettled,
+/// lower). On face z = 0 the inside corners are 0 (water) and 3 (rock), on a
+/// diagonal. The fallback must keep them apart: the water steps down along the
+/// bottom edge toward corner 1, not up the top edge toward the rock.
+#[test]
+fn the_fallback_joins_water_to_water_not_to_rock() {
+    let surface = mesh_preset("water beside a ledge, unsettled");
+    assert!(!surface.is_empty());
+    assert!(
+        surface.positions.iter().all(|p| p.y < 0.5),
+        "the water climbs toward the rock: {:?}",
+        surface.positions
+    );
+    // The fallback point: on the bottom edge from corner 0 (b = 10) to
+    // corner 1 (b = 3), where the fill falls through 7.5.
+    let expected = vec3(2.5 / 7.0, 0.0, 0.0);
+    assert!(surface.positions.iter().any(|&p| (p - expected).length() < 1e-6));
+}

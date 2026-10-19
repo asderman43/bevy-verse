@@ -234,6 +234,16 @@ and the surface stays watertight when the level steps between rows. If the wet
 edge isn't on the `O` contour at all (a slot kept by the ledge rule), the
 shoreline point is the wet edge's own surface vertex.
 
+**Water joins water, not rock.** On a diagonal face whose two inside corners
+are one water and one rock, the fallback resolves the ambiguity the other way
+from the terrain: it keeps the inside corners apart (`FACE_SEGS_APART`), so the
+water's contour runs to its own neighbours. Example: solid 3, 4, 5, water
+inside at corner 0 and a little at corner 1. On face z = 0 the terrain rule
+would join corner 0's water to rock 3 and put the shoreline point halfway along
+the top edge; kept apart, it lands on the bottom edge toward corner 1, where
+the fill falls through 7.5, and the water steps down to corner 1's lower level.
+Decided from the face alone, so both cells sharing it agree.
+
 **Shore overlap (recommended).** Move each terrain-derived shoreline point a
 small distance `SHORE_OVERLAP` (about `0.02·cs`) horizontally along the face,
 toward the dry edge, into the solid. Inside the cell, the true waterline can bend
@@ -325,6 +335,7 @@ layout.
 | `FACE_SEGS[16]` | tiny | for a face's 4-bit inside mask, the pairs of face edges joined by a contour segment (at most 2) |
 | `MS_TRIS[16]` | tiny | triangles over `V0–V3`, `F0–F3` (§3.4) |
 | `RECIP` | `W_MAX + 1` × f32 | `1 / d` for `d ≥ 1`; fallback only |
+| `FACE_SEGS_APART[16]` | tiny | `FACE_SEGS` with the diagonals cutting off inside corners: the fallback on mixed water/rock diagonals (§3.3) |
 | `CORNER_BODY[256]` | 2 KiB | for a solid mask, which body of open space each corner is in (§3.4) |
 
 **`FACE_SEGS` must resolve ambiguous faces the way the terrain does.** 14 of the
@@ -600,6 +611,7 @@ terrain's own tests.
 | `chunks_agree_on_their_shared_face` | two chunks put the same points on their shared face (1e-5) |
 | `a_level_at_a_terrain_vertex_lands_on_it` | the shoreline point is the terrain vertex, bitwise |
 | `a_sealed_pocket_and_the_pool_above_are_meshed_apart`, `corner_bodies_follow_open_edges` | two bodies in one cell, each flat at its own level |
+| `the_fallback_joins_water_to_water_not_to_rock`, `face_segs_apart_differ_only_on_diagonals` | on a water/rock diagonal the fallback steps toward the water |
 | examples A–F, `surface_cases_give_their_table_shapes`, `every_preset_meshes` | §7 and the 16 cases |
 | `face_segs_match_the_terrain` | for all 256 cases × 4 faces, `FACE_SEGS` gives the terrain's in-face segments |
 | `ms_tris_are_convex_and_face_up`, `diagonal_cases_do_not_bridge`, `vert_t_covers_the_surface_range` | tables |
